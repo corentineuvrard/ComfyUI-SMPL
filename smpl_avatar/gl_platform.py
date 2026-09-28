@@ -17,8 +17,26 @@ Policy implemented here:
 
 The variable only has an effect if it is set before ``OpenGL`` is imported, so
 :func:`configure` is called when the node pack is imported by ComfyUI. If
-another package already imported ``OpenGL`` earlier, a warning is logged
-because the choice can no longer take effect.
+another package already imported ``OpenGL`` earlier, the choice can no longer
+take effect in this process and rendering uses the worker described below.
+
+Render worker
+-------------
+When OpenGL was already imported by someone else (recent ComfyUI versions do
+so at startup, see below), rendering runs in a separate worker process whose
+environment is computed by :func:`worker_environment`:
+
+* ``SMPL_AVATAR_GL_PLATFORM``, if set, is used for the worker's
+  ``PYOPENGL_PLATFORM`` (``default`` means "leave it unset").
+* Otherwise the value of ``PYOPENGL_PLATFORM`` is passed on unchanged, with
+  one exception: ComfyUI's built-in GLSL node (``comfy_extras/nodes_glsl.py``)
+  loads ANGLE and calls ``os.environ.setdefault("PYOPENGL_PLATFORM", "egl")``
+  at startup. On Windows and macOS that ``egl`` targets ANGLE, which only
+  provides OpenGL ES and cannot run pyrender, so when ANGLE is loaded
+  (``comfy_angle`` imported) on those platforms the worker does not inherit it.
+* Then the same headless-Linux rule as above applies.
+
+The ComfyUI process's own environment is never modified by this.
 """
 
 from __future__ import annotations
@@ -26,11 +44,12 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Mapping, Optional, Tuple
+from typing import Collection, Dict, Mapping, Optional, Tuple
 
 LOGGER = logging.getLogger(__name__)
 
 ENV_VAR = "PYOPENGL_PLATFORM"
+ENV_WORKER_OVERRIDE = "SMPL_AVATAR_GL_PLATFORM"
 
 _configured: Optional[Tuple[Optional[str], str]] = None
 
@@ -59,14 +78,46 @@ def configure() -> Tuple[Optional[str], str]:
     value, reason = decide(os.environ, sys.platform)
     if value is not None:
         if "OpenGL" in sys.modules:
-            LOGGER.warning(
-                "[SMPL Avatar] PyOpenGL was imported before this node pack, so "
-                "%s=%s cannot take effect any more. Set %s=%s in the environment "
-                "that launches ComfyUI if rendering fails.",
-                ENV_VAR, value, ENV_VAR, value,
+            LOGGER.info(
+                "[SMPL Avatar] PyOpenGL was already imported by another package; rendering "
+                "will run in a separate worker process with %s=%s.", ENV_VAR, value,
             )
         else:
             os.environ[ENV_VAR] = value
     LOGGER.info("[SMPL Avatar] OpenGL platform: %s", reason)
     _configured = (value, reason)
     return _configured
+
+
+def set_by_comfyui_angle(environ: Mapping[str, str], platform: str, modules: Collection[str]) -> bool:
+    """True when ``PYOPENGL_PLATFORM=egl`` comes from ComfyUI's ANGLE setup (not usable by pyrender)."""
+    return (
+        environ.get(ENV_VAR) == "egl"
+        and "comfy_angle" in modules
+        and not platform.startswith("linux")
+    )
+
+
+def worker_environment(
+    environ: Mapping[str, str], platform: str, modules: Collection[str]
+) -> Tuple[Dict[str, str], str]:
+    """Environment for the render worker process and a human-readable reason."""
+    env = dict(environ)
+    override = environ.get(ENV_WORKER_OVERRIDE, "").strip()
+    if override:
+        if override.lower() == "default":
+            env.pop(ENV_VAR, None)
+            return env, f"{ENV_WORKER_OVERRIDE}=default: platform default backend"
+        env[ENV_VAR] = override
+        return env, f"{ENV_WORKER_OVERRIDE}={override!r}"
+    notes = []
+    if set_by_comfyui_angle(environ, platform, modules):
+        env.pop(ENV_VAR, None)
+        notes.append(
+            f"ignoring {ENV_VAR}=egl set by ComfyUI's GLSL node for ANGLE (OpenGL ES only)"
+        )
+    value, reason = decide(env, platform)
+    if value is not None:
+        env[ENV_VAR] = value
+    notes.append(reason)
+    return env, "; ".join(notes)

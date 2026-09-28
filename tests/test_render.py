@@ -71,6 +71,68 @@ def test_renderer_is_reused_until_size_changes(gl_available, cache):
     assert cache.creations == 2 and cache.size == (48, 32)
 
 
+@pytest.mark.parametrize("requested, preloaded, expected", [
+    (None, False, "inprocess"),
+    (None, True, "worker"),
+    ("auto", True, "worker"),
+    ("inprocess", True, "inprocess"),
+    ("worker", False, "worker"),
+    (" Worker ", False, "worker"),
+])
+def test_choose_mode(requested, preloaded, expected):
+    assert render.choose_mode(requested, preloaded) == expected
+
+
+def test_choose_mode_rejects_unknown_values():
+    with pytest.raises(ValueError, match="SMPL_AVATAR_RENDER_PROCESS"):
+        render.choose_mode("gpu", False)
+
+
+def test_worker_protocol_in_process(gl_available, cache):
+    vertices, faces = box_mesh()
+    view = compute_view(vertices, 24, 24)
+    labels = np.zeros(len(faces), dtype=np.int64)
+    reply = render._unpack(render.handle_request(render.encode_request(vertices, faces, 24, 24, view, labels), cache))
+    assert reply["color"].shape == (24, 24, 4) and reply["color"].dtype == np.uint8
+    assert reply["raw_depth"].shape == (24, 24) and reply["seg"].shape == (24, 24, 3)
+    bad = render._unpack(render.handle_request(render.encode_request(vertices, faces, 24, 24, view, labels[:3]), cache))
+    assert "face_labels" in str(bad["error"])
+
+
+@pytest.fixture()
+def worker():
+    worker = render.RenderWorker()
+    yield worker
+    worker.close()
+
+
+def test_worker_process_matches_in_process(gl_available, cache, worker, monkeypatch):
+    monkeypatch.setattr(render, "RENDER_WORKER", worker)
+    vertices, faces = box_mesh(size=(1.0, 1.0, 1.0))
+    vertices = render.rotate_y(vertices, 25.0)
+    face_labels = np.where(vertices[faces].mean(axis=1)[:, 0] > 0, 16, 3)
+    view = compute_view(np.array([[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]), 80, 64, padding=0.0)
+    args = (vertices, faces, 80, 64, view)
+    local = render_mesh(*args, face_labels=face_labels, soft_mask=True, cache=cache, mode="inprocess")
+    remote = render_mesh(*args, face_labels=face_labels, soft_mask=True, mode="worker")
+    assert worker.running and worker.starts == 1
+    np.testing.assert_array_equal(remote.coverage, local.coverage)
+    np.testing.assert_array_equal(remote.part_masks, local.part_masks)
+    np.testing.assert_allclose(remote.image, local.image, atol=1 / 255)
+    np.testing.assert_allclose(remote.depth, local.depth, atol=1e-4)
+
+    # Errors raised in the worker are reported and the worker keeps running.
+    with pytest.raises(RuntimeError, match="face_labels"):
+        render_mesh(*args, face_labels=face_labels[:5], mode="worker")
+    assert worker.running
+
+    # A stopped worker is restarted on the next render.
+    worker.close()
+    assert not worker.running
+    render_mesh(*args, mode="worker")
+    assert worker.starts == 2
+
+
 # ------------------------------------------------------------------ SMPL
 
 

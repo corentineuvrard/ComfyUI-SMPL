@@ -4,17 +4,34 @@ One colour pass produces the shaded image, the exact coverage (alpha resolved
 from 4x MSAA) and the depth buffer. An optional flat segmentation pass
 produces a per-pixel body-part label map.
 
+The OpenGL work (:func:`rasterize`) runs either in this process or in a
+persistent worker process (``render_worker.py``). The worker is used when
+OpenGL was already imported by another package before this pack needed it:
+PyOpenGL binds to one platform per process, and recent ComfyUI versions import
+it at startup for their own GLSL node, bound to ANGLE (OpenGL ES only), which
+pyrender cannot use. Set ``SMPL_AVATAR_RENDER_PROCESS`` to ``worker`` or
+``inprocess`` to force a mode. All post-processing (masks, depth, part labels)
+runs in the calling process with NumPy.
+
 pyrender is imported lazily, after :mod:`.gl_platform` had a chance to choose
 the OpenGL platform.
 """
 
 from __future__ import annotations
 
+import atexit
+import io
+import logging
 import math
+import os
+import struct
+import subprocess
+import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterator, Optional, Tuple
+from pathlib import Path
+from typing import Dict, Iterator, Optional, Tuple
 
 import numpy as np
 
@@ -30,8 +47,22 @@ BODY_COLOR = (0.72, 0.72, 0.74)
 DEPTH_FAR_VALUE = 0.2
 
 
+LOGGER = logging.getLogger(__name__)
+
+ENV_RENDER_PROCESS = "SMPL_AVATAR_RENDER_PROCESS"
+RENDER_MODES = ("auto", "worker", "inprocess")
+WORKER_SCRIPT = Path(__file__).resolve().parent / "render_worker.py"
+
+# Whether OpenGL had been imported by another package before this module first
+# imported pyrender (None until then).
+_opengl_preloaded: Optional[bool] = None
+
+
 def import_pyrender():
     """Import pyrender after configuring the OpenGL platform."""
+    global _opengl_preloaded
+    if _opengl_preloaded is None:
+        _opengl_preloaded = "OpenGL" in sys.modules
     gl_platform.configure()
     if not hasattr(np, "infty"):
         # pyrender 0.1.45 still references np.infty, which NumPy 2.0 removed.
@@ -266,31 +297,22 @@ class RendererCache:
 RENDERER_CACHE = RendererCache()
 
 
-@dataclass
-class RenderResult:
-    image: np.ndarray  # (H, W, 3) float32, composited over the background
-    mask: np.ndarray  # (H, W) float32, hard (0/1) or soft coverage
-    depth: np.ndarray  # (H, W) float32, near = 1, far body = DEPTH_FAR_VALUE, background = 0
-    distance: np.ndarray  # (H, W) float32, camera distance in metres (0 = background)
-    coverage: np.ndarray  # (H, W) float32, MSAA coverage in [0, 1]
-    labels: Optional[np.ndarray] = None  # (H, W) int64 part index, -1 = background
-    part_masks: Optional[np.ndarray] = None  # (24, H, W) float32
-
-
-def render_mesh(
+def rasterize(
     vertices: np.ndarray,
     faces: np.ndarray,
     width: int,
     height: int,
     view: OrthoView,
     face_labels: Optional[np.ndarray] = None,
-    background: str = "black",
-    soft_mask: bool = False,
     cache: RendererCache = RENDERER_CACHE,
-) -> RenderResult:
+) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+    """Run the OpenGL passes in this process.
+
+    Returns the RGBA colour pass ``(H, W, 4) uint8``, pyrender's depth output
+    ``(H, W) float32`` and, if ``face_labels`` is given, the flat label pass
+    ``(H, W, 3) uint8``.
+    """
     pyrender = import_pyrender()
-    if background not in BACKGROUNDS:
-        raise ValueError(f"unknown background {background!r}; expected one of {list(BACKGROUNDS)}")
     vertices = np.asarray(vertices, dtype=np.float32)
     faces = np.asarray(faces, dtype=np.uint32)
 
@@ -331,8 +353,192 @@ def render_mesh(
         seg_rgb = None
         if seg_scene is not None:
             seg_rgb, _ = renderer.render(seg_scene, flags=pyrender.RenderFlags.SEG, seg_node_map=seg_map)
+    return (
+        np.ascontiguousarray(color, dtype=np.uint8),
+        np.ascontiguousarray(raw_depth, dtype=np.float32),
+        None if seg_rgb is None else np.ascontiguousarray(seg_rgb[..., :3], dtype=np.uint8),
+    )
 
-    color = np.asarray(color)
+
+# ------------------------------------------------------------ render worker
+
+
+def _pack(**arrays: np.ndarray) -> bytes:
+    buffer = io.BytesIO()
+    np.savez(buffer, **arrays)
+    return buffer.getvalue()
+
+
+def _unpack(payload: bytes) -> Dict[str, np.ndarray]:
+    with np.load(io.BytesIO(payload), allow_pickle=False) as data:
+        return {name: data[name] for name in data.files}
+
+
+def _write_message(stream, payload: bytes) -> None:
+    stream.write(struct.pack("<Q", len(payload)))
+    stream.write(payload)
+    stream.flush()
+
+
+def _read_exact(stream, size: int) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = stream.read(size - len(chunks))
+        if not chunk:
+            raise EOFError("render worker channel closed")
+        chunks += chunk
+    return bytes(chunks)
+
+
+def _read_message(stream) -> bytes:
+    (size,) = struct.unpack("<Q", _read_exact(stream, 8))
+    return _read_exact(stream, size)
+
+
+def encode_request(vertices, faces, width, height, view: OrthoView, face_labels=None) -> bytes:
+    arrays = {
+        "vertices": np.asarray(vertices, dtype=np.float32),
+        "faces": np.asarray(faces, dtype=np.uint32),
+        "size": np.array([width, height], dtype=np.int64),
+        "view": np.array(
+            [view.center_x, view.center_y, view.xmag, view.ymag, view.camera_z, view.znear, view.zfar],
+            dtype=np.float64,
+        ),
+    }
+    if face_labels is not None:
+        arrays["face_labels"] = np.asarray(face_labels, dtype=np.int64)
+    return _pack(**arrays)
+
+
+def handle_request(payload: bytes, cache: RendererCache = RENDERER_CACHE) -> bytes:
+    """Worker side: decode a request, rasterize, encode the reply (errors included)."""
+    try:
+        request = _unpack(payload)
+        width, height = (int(x) for x in request["size"])
+        view = OrthoView(*(float(x) for x in request["view"]))
+        color, raw_depth, seg = rasterize(
+            request["vertices"], request["faces"], width, height, view,
+            face_labels=request.get("face_labels"), cache=cache,
+        )
+        reply = {"color": color, "raw_depth": raw_depth}
+        if seg is not None:
+            reply["seg"] = seg
+        return _pack(**reply)
+    except Exception as exc:  # reported to the client; the worker keeps running
+        return _pack(error=np.array(f"{type(exc).__name__}: {exc}"))
+
+
+class RenderWorker:
+    """Persistent child process running :func:`rasterize`, started on first use."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._process: Optional[subprocess.Popen] = None
+        self.starts = 0
+
+    @property
+    def running(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
+    def _start(self) -> None:
+        env, reason = gl_platform.worker_environment(os.environ, sys.platform, set(sys.modules))
+        LOGGER.info("[SMPL Avatar] Starting the render worker process (OpenGL: %s)", reason)
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        self._process = subprocess.Popen(
+            [sys.executable, str(WORKER_SCRIPT)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, **kwargs,
+        )
+        self.starts += 1
+
+    def rasterize(self, vertices, faces, width, height, view, face_labels=None):
+        request = encode_request(vertices, faces, width, height, view, face_labels)
+        with self._lock:
+            if not self.running:
+                self._start()
+            try:
+                _write_message(self._process.stdin, request)
+                reply = _unpack(_read_message(self._process.stdout))
+            except (OSError, EOFError) as exc:
+                code = self._process.poll()
+                self._process = None
+                raise RuntimeError(
+                    f"the SMPL Avatar render worker stopped (exit code {code}); its error output "
+                    "is in the ComfyUI console. It is restarted on the next render."
+                ) from exc
+        if "error" in reply:
+            raise RuntimeError(f"render worker: {reply['error']}")
+        return reply["color"], reply["raw_depth"], reply.get("seg")
+
+    def close(self, timeout: float = 5.0) -> None:
+        with self._lock:
+            process, self._process = self._process, None
+        if process is None:
+            return
+        try:
+            process.stdin.close()
+            process.wait(timeout=timeout)
+        except Exception:
+            process.kill()
+
+
+RENDER_WORKER = RenderWorker()
+atexit.register(RENDER_WORKER.close)
+
+
+def choose_mode(requested: Optional[str], opengl_preloaded: bool) -> str:
+    """``auto`` picks the worker when OpenGL was already imported by another package."""
+    mode = (requested or "auto").strip().lower()
+    if mode not in RENDER_MODES:
+        raise ValueError(f"{ENV_RENDER_PROCESS} must be one of {RENDER_MODES}, got {requested!r}")
+    if mode == "auto":
+        return "worker" if opengl_preloaded else "inprocess"
+    return mode
+
+
+def current_mode(requested: Optional[str] = None) -> str:
+    """Rendering mode (``worker`` or ``inprocess``) for ``requested`` or $SMPL_AVATAR_RENDER_PROCESS."""
+    preloaded = _opengl_preloaded if _opengl_preloaded is not None else "OpenGL" in sys.modules
+    return choose_mode(requested or os.environ.get(ENV_RENDER_PROCESS), preloaded)
+
+
+@dataclass
+class RenderResult:
+    image: np.ndarray  # (H, W, 3) float32, composited over the background
+    mask: np.ndarray  # (H, W) float32, hard (0/1) or soft coverage
+    depth: np.ndarray  # (H, W) float32, near = 1, far body = DEPTH_FAR_VALUE, background = 0
+    distance: np.ndarray  # (H, W) float32, camera distance in metres (0 = background)
+    coverage: np.ndarray  # (H, W) float32, MSAA coverage in [0, 1]
+    labels: Optional[np.ndarray] = None  # (H, W) int64 part index, -1 = background
+    part_masks: Optional[np.ndarray] = None  # (24, H, W) float32
+
+
+def render_mesh(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    width: int,
+    height: int,
+    view: OrthoView,
+    face_labels: Optional[np.ndarray] = None,
+    background: str = "black",
+    soft_mask: bool = False,
+    cache: RendererCache = RENDERER_CACHE,
+    mode: Optional[str] = None,
+) -> RenderResult:
+    """Render the mesh and derive image, masks, depth and part masks.
+
+    ``mode`` forces ``worker`` or ``inprocess``; by default :func:`current_mode`
+    decides. ``cache`` is only used in-process.
+    """
+    if background not in BACKGROUNDS:
+        raise ValueError(f"unknown background {background!r}; expected one of {list(BACKGROUNDS)}")
+    mode = current_mode(mode)
+    if mode == "worker":
+        color, raw_depth, seg_rgb = RENDER_WORKER.rasterize(vertices, faces, width, height, view, face_labels)
+    else:
+        color, raw_depth, seg_rgb = rasterize(vertices, faces, width, height, view, face_labels, cache)
+
     alpha8 = color[..., 3]
     coverage = alpha8.astype(np.float32) / 255.0
     mask = coverage if soft_mask else (coverage >= 0.5).astype(np.float32)

@@ -49,3 +49,30 @@ def test_configure_sets_egl_when_headless(monkeypatch):
     value, _ = gl_platform.configure()
     assert value == "egl"
     assert gl_platform.os.environ["PYOPENGL_PLATFORM"] == "egl"
+
+
+@pytest.mark.parametrize("environ, platform, modules, expected", [
+    # ComfyUI's GLSL node sets egl for ANGLE (OpenGL ES only): not inherited on Windows / macOS.
+    ({"PYOPENGL_PLATFORM": "egl"}, "win32", {"comfy_angle"}, None),
+    ({"PYOPENGL_PLATFORM": "egl"}, "darwin", {"comfy_angle"}, None),
+    # On Linux egl works with the system EGL: kept.
+    ({"PYOPENGL_PLATFORM": "egl"}, "linux", {"comfy_angle"}, "egl"),
+    # Without ANGLE loaded, a user's value is respected.
+    ({"PYOPENGL_PLATFORM": "egl"}, "win32", set(), "egl"),
+    ({"PYOPENGL_PLATFORM": "osmesa"}, "win32", {"comfy_angle"}, "osmesa"),
+    # Explicit override for the worker.
+    ({"PYOPENGL_PLATFORM": "egl", "SMPL_AVATAR_GL_PLATFORM": "default"}, "linux", set(), None),
+    ({"SMPL_AVATAR_GL_PLATFORM": "osmesa"}, "linux", set(), "osmesa"),
+    # Headless Linux rule.
+    ({}, "linux", set(), "egl"),
+    ({"DISPLAY": ":0"}, "linux", set(), None),
+])
+def test_worker_environment(environ, platform, modules, expected):
+    original = dict(environ)
+    env, reason = gl_platform.worker_environment(environ, platform, modules)
+    assert env.get("PYOPENGL_PLATFORM") == expected
+    assert reason
+    assert environ == original  # the caller's environment is never modified
+    for key, value in environ.items():
+        if key != "PYOPENGL_PLATFORM":
+            assert env[key] == value
