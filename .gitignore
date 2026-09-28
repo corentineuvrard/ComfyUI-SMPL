@@ -15,7 +15,6 @@
 *.ckpt
 *.safetensors
 *.zip
-SMPL*.json
 smpl_vert_segmentation*.json
 
 # --- Python -------------------------------------------------------------------
