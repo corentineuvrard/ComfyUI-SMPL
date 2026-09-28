@@ -99,25 +99,24 @@ def test_train_on_synthetic_body_hits_targets():
     grid = regressor.target_grid(np.arange(165.0, 186.0, 5.0), np.arange(20.0, 29.0, 2.0))
     reg = regressor.train(vertices, shapedirs, faces, samples=4000, seed=3, grid=grid)
     assert reg.weights.shape == (2, NUM_BETAS) and reg.bias.shape == (NUM_BETAS,)
-    ols, calibrated = reg.meta["report"]["ols"]["grid"], reg.meta["report"]["calibrated"]["grid"]
-    # Calibration folds an affine input correction into the map: it must reduce
-    # the average round-trip error on the grid it was fitted on.
-    assert calibrated["height_mae_cm"] < ols["height_mae_cm"]
-    assert calibrated["weight_mae_kg"] < ols["weight_mae_kg"]
-    assert calibrated["height_max_cm"] < 0.5
-    assert calibrated["weight_max_kg"] < 2.5
+    report = reg.meta["report"]
+    assert set(report) == {"grid", "grid_bmi_18.5_30", "held_out", "beta_r2_held_out"}
+    assert report["grid"]["height_max_cm"] < 1.5
+    assert report["grid"]["weight_max_kg"] < 2.5
+    assert report["held_out"]["weight_mape_pct"] < 3.0
+    assert report["beta_r2_held_out"][0] > 0.9  # height is explained by beta 0
     assert reg.meta["model_fingerprint"] == regressor.model_fingerprint(vertices, shapedirs, faces)
     assert reg.meta["seed"] == 3 and reg.meta["samples"] == 4000
 
     h, w = regressor.measure_betas(vertices, shapedirs, faces, reg.predict(175.0, 70.0))
-    assert h[0] == pytest.approx(175.0, abs=0.5)
+    assert h[0] == pytest.approx(175.0, abs=1.5)
     assert w[0] == pytest.approx(70.0, abs=1.5)
 
 
 def test_training_is_deterministic():
     vertices, shapedirs, faces = synthetic_body()
-    a = regressor.train(vertices, shapedirs, faces, samples=1000, seed=5, do_calibrate=False)
-    b = regressor.train(vertices, shapedirs, faces, samples=1000, seed=5, do_calibrate=False)
+    a = regressor.train(vertices, shapedirs, faces, samples=1000, seed=5)
+    b = regressor.train(vertices, shapedirs, faces, samples=1000, seed=5)
     np.testing.assert_array_equal(a.affine_matrix(), b.affine_matrix())
 
 

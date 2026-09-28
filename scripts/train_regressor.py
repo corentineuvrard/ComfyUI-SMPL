@@ -34,7 +34,6 @@ def main(argv=None) -> int:
     parser.add_argument("--samples", type=int, default=regressor.DEFAULT_SAMPLES)
     parser.add_argument("--seed", type=int, default=regressor.DEFAULT_SEED)
     parser.add_argument("--beta-std", type=float, default=regressor.DEFAULT_BETA_STD)
-    parser.add_argument("--no-calibrate", action="store_true", help="plain least squares only")
     parser.add_argument("--output", type=Path, default=paths.REGRESSOR_PATH,
                         help=f"regressor file to update (default: {paths.REGRESSOR_PATH})")
     parser.add_argument("--report", type=Path, help="also write the full fit report as JSON")
@@ -53,7 +52,6 @@ def main(argv=None) -> int:
             reg = regressor.train(
                 body.v_template, body.shapedirs, body.faces, gender=gender,
                 samples=args.samples, seed=args.seed, beta_std=args.beta_std,
-                do_calibrate=not args.no_calibrate,
                 extra_meta={"model_type": model_type, "model_file": body.path.name},
             )
             key = regressor.regressor_key(model_type, gender)
@@ -63,16 +61,15 @@ def main(argv=None) -> int:
                   f"training heights {reg.meta['training_height_range_cm'][0]:.0f}-"
                   f"{reg.meta['training_height_range_cm'][1]:.0f} cm, weights "
                   f"{reg.meta['training_weight_range_kg'][0]:.0f}-{reg.meta['training_weight_range_kg'][1]:.0f} kg)")
-            print(f"  {'fit':<12}{'set':<10}{'height MAE':>12}{'height max':>12}{'weight MAE':>12}{'weight max':>12}{'weight MAPE':>13}")
-            for fit_name in ("ols", "calibrated"):
-                for set_name in ("grid", "held_out"):
-                    if fit_name not in reg.meta["report"]:
-                        continue
-                    e = reg.meta["report"][fit_name][set_name]
-                    print(f"  {fit_name:<12}{set_name:<10}{e['height_mae_cm']:>9.2f} cm{e['height_max_cm']:>9.2f} cm"
-                          f"{e['weight_mae_kg']:>9.2f} kg{e['weight_max_kg']:>9.2f} kg{e['weight_mape_pct']:>11.2f} %")
+            print(f"  {'evaluation set':<18}{'height MAE':>12}{'height max':>12}{'weight MAE':>12}{'weight max':>12}{'weight MAPE':>13}")
+            for set_name in ("held_out", "grid_bmi_18.5_30", "grid"):
+                e = reg.meta["report"][set_name]
+                if e is None:
+                    continue
+                print(f"  {set_name:<18}{e['height_mae_cm']:>9.2f} cm{e['height_max_cm']:>9.2f} cm"
+                      f"{e['weight_mae_kg']:>9.2f} kg{e['weight_max_kg']:>9.2f} kg{e['weight_mape_pct']:>11.2f} %")
             r2 = reg.meta["report"]["beta_r2_held_out"]
-            print("  held-out R^2 per beta (OLS): " + " ".join(f"{x:.2f}" for x in r2))
+            print("  held-out R^2 per beta: " + " ".join(f"{x:.2f}" for x in r2))
 
     if not reports:
         print("No body model installed; nothing to do.")

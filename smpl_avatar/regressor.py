@@ -11,10 +11,9 @@ user downloaded themselves:
 3. Measure height (vertex extent along the vertical axis) and weight
    (enclosed mesh volume times a constant body density).
 4. Fit ordinary least squares ``[height, weight, 1] -> betas``.
-5. Optionally calibrate: find, for a grid of target (height, weight) pairs,
-   the regressor inputs whose predicted mesh measures exactly the target, and
-   fold the resulting affine input correction into the weights. The composed
-   map is still affine, so the stored model remains a linear regressor.
+5. Report the round-trip error: rebuild the mesh from the predicted betas and
+   compare its measured height and weight with the requested ones, on a grid
+   of heights x BMI values and on held-out samples.
 
 Everything in this module is NumPy only.
 """
@@ -25,7 +24,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Mapping, Optional, Tuple
+from typing import Dict, Iterable, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -251,33 +250,6 @@ def fit_least_squares(height_cm, weight_kg, betas) -> LinearBetaRegressor:
     return LinearBetaRegressor(weights=solution[:2], bias=solution[2])
 
 
-def calibrate(
-    regressor: LinearBetaRegressor,
-    measure: Callable[[np.ndarray], Tuple[np.ndarray, np.ndarray]],
-    targets: np.ndarray,
-    iterations: int = 30,
-) -> LinearBetaRegressor:
-    """Fold an affine input correction into ``regressor``.
-
-    For each target ``t = (height_cm, weight_kg)`` a fixed-point iteration finds
-    the input ``u`` such that ``measure(regressor(u)) == t``. An affine map
-    ``u = [t, 1] @ M`` is then fitted by least squares and composed with the
-    regressor, so the result is still ``[t, 1] @ A``.
-    """
-    targets = np.asarray(targets, dtype=np.float64)
-    inputs = targets.copy()
-    for _ in range(iterations):
-        h, w = measure(regressor.predict(inputs[:, 0], inputs[:, 1]))
-        inputs += targets - np.column_stack([h, w])
-    design = np.column_stack([targets, np.ones(len(targets))])
-    correction, *_ = np.linalg.lstsq(design, inputs, rcond=None)  # (3, 2)
-    lift = np.zeros((3, 3))
-    lift[:, :2] = correction
-    lift[2, 2] = 1.0
-    composed = lift @ regressor.affine_matrix()
-    return LinearBetaRegressor(weights=composed[:2], bias=composed[2], meta=regressor.meta)
-
-
 def target_grid(
     heights_cm: Iterable[float], bmis: Iterable[float]
 ) -> np.ndarray:
@@ -328,7 +300,6 @@ def train(
     beta_std: float = DEFAULT_BETA_STD,
     density: float = BODY_DENSITY_KG_M3,
     grid: Optional[np.ndarray] = None,
-    do_calibrate: bool = True,
     extra_meta: Optional[Mapping] = None,
 ) -> LinearBetaRegressor:
     """Train a regressor for one body model and return it with a fit report in ``meta``."""
@@ -340,39 +311,33 @@ def train(
     n_train = int(samples * 0.8)
     train_slice, test_slice = slice(0, n_train), slice(n_train, samples)
 
-    ols = fit_least_squares(heights[train_slice], weights[train_slice], betas[train_slice])
-    predicted = ols.predict(heights[test_slice], weights[test_slice])
-    residual = predicted - betas[test_slice]
-    beta_rmse = np.sqrt((residual ** 2).mean(axis=0))
+    reg = fit_least_squares(heights[train_slice], weights[train_slice], betas[train_slice])
+    residual = reg.predict(heights[test_slice], weights[test_slice]) - betas[test_slice]
     beta_r2 = 1.0 - (residual ** 2).sum(axis=0) / (
         (betas[test_slice] - betas[test_slice].mean(axis=0)) ** 2
     ).sum(axis=0)
 
     if grid is None:
         grid = target_grid(**DEFAULT_GRID.get(gender, DEFAULT_GRID["male"]))
-    # Held-out samples are the second evaluation set: realistic by construction
-    # (they come from the same prior) but not used for fitting.
-    held_out = np.column_stack([heights[test_slice], weights[test_slice]])[:1000]
+    bmi = grid[:, 1] / (grid[:, 0] / 100.0) ** 2
+    common = grid[(bmi >= 18.5) & (bmi <= 30.0)]
+    # Held-out samples come from the same prior as the training set (realistic
+    # bodies) but were not used for fitting.
+    held_out = np.column_stack([heights[test_slice], weights[test_slice]])
 
-    def roundtrip(reg: LinearBetaRegressor, points: np.ndarray) -> Dict[str, float]:
+    def roundtrip(points: np.ndarray) -> Dict[str, float]:
         h, w = measure(reg.predict(points[:, 0], points[:, 1]))
         return _errors(points[:, 0], points[:, 1], h, w)
 
     report = {
-        "ols": {"grid": roundtrip(ols, grid), "held_out": roundtrip(ols, held_out)},
-        "beta_rmse_held_out": [float(x) for x in beta_rmse],
+        "grid": roundtrip(grid),
+        "grid_bmi_18.5_30": roundtrip(common) if len(common) else None,
+        "held_out": roundtrip(held_out),
         "beta_r2_held_out": [float(x) for x in beta_r2],
     }
-    final = ols
-    if do_calibrate:
-        final = calibrate(ols, measure, grid)
-        report["calibrated"] = {
-            "grid": roundtrip(final, grid),
-            "held_out": roundtrip(final, held_out),
-        }
 
     meta = {
-        "method": "synthetic least squares" + (" + affine calibration" if do_calibrate else ""),
+        "method": "synthetic ordinary least squares",
         "gender": gender,
         "samples": samples,
         "seed": seed,
@@ -389,4 +354,4 @@ def train(
     }
     if extra_meta:
         meta.update(extra_meta)
-    return LinearBetaRegressor(weights=final.weights, bias=final.bias, meta=meta)
+    return LinearBetaRegressor(weights=reg.weights, bias=reg.bias, meta=meta)

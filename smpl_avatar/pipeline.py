@@ -50,9 +50,9 @@ def regressor_for(body: body_model.BodyModel, path: Path = paths.REGRESSOR_PATH)
                 body.v_template, body.shapedirs, body.faces, gender=body.gender,
                 extra_meta={"model_type": body.model_type, "model_file": body.path.name},
             )
-            report = reg.meta["report"]["calibrated"]["grid"]
+            report = reg.meta["report"]["held_out"]
             LOGGER.info(
-                "[SMPL Avatar] Regressor ready in %.1f s (grid round-trip MAE: %.2f cm, %.2f kg)",
+                "[SMPL Avatar] Regressor ready in %.1f s (round-trip MAE: %.2f cm, %.2f kg)",
                 time.perf_counter() - start, report["height_mae_cm"], report["weight_mae_kg"],
             )
             stored[key] = reg
