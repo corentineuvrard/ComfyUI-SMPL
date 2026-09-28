@@ -1,0 +1,32 @@
+[project]
+name = "smpl-avatar"  # Comfy Registry node id: immutable once published
+version = "0.1.0"
+description = "Generate SMPL / SMPL-H body avatars from height and weight in ComfyUI: shaded render, exact silhouette mask, depth map and 24 body-part masks for ControlNet-style conditioning."
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Corentin Euvrard" }]
+classifiers = [
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: MIT License",
+]
+# torch and numpy are provided by ComfyUI and deliberately not listed.
+# smplx is distributed under a non-commercial research license: see README.
+dependencies = ["smplx>=0.1.28", "pyrender>=0.1.45"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.urls]
+# The GitHub repository must exist before publishing to the Comfy Registry.
+Repository = "https://github.com/corentineuvrard/ComfyUI-SMPL"
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "SMPL Avatar"
+Icon = ""
+includes = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]

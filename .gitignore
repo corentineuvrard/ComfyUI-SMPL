@@ -1,0 +1,35 @@
+# --- Body model files: never commit them -------------------------------------
+# SMPL, SMPL-H and MANO are licensed by the Max Planck Institute for Intelligent
+# Systems and must be downloaded by each user from the official websites.
+# Everything under models/ is local data (body models, the height/weight
+# regressor generated from them, the downloaded part segmentation), except the
+# README that explains the layout.
+/models/**
+!/models/README.md
+# Belt and braces: model-like files anywhere in the tree.
+*.pkl
+*.npz
+*.npy
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.zip
+SMPL*.json
+smpl_vert_segmentation*.json
+
+# --- Python -------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# --- Editors / OS -------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

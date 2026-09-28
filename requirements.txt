@@ -1,0 +1,4 @@
+# torch and numpy are provided by ComfyUI and are deliberately not listed.
+# smplx is distributed under the Max Planck non-commercial research license (see README).
+smplx>=0.1.28
+pyrender>=0.1.45
