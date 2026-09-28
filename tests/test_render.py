@@ -1,0 +1,130 @@
+"""Rendering tests. They need an OpenGL context; SMPL tests also need the model files."""
+
+import numpy as np
+import pytest
+
+from smpl_avatar import render
+from smpl_avatar.render import RendererCache, compute_view, render_mesh
+from smpl_avatar.segmentation import NUM_PARTS
+from helpers import box_mesh, installed_models
+
+MODELS = installed_models()
+needs_models = pytest.mark.skipif(not MODELS, reason="no SMPL / SMPL-H model files installed")
+
+
+@pytest.fixture()
+def cache():
+    cache = RendererCache()
+    yield cache
+    cache.release()
+
+
+def test_box_render_is_exact(gl_available, cache):
+    # 1 m x 1 m square face towards the camera, 2 m x 2 m view on 200 x 200 px.
+    vertices, faces = box_mesh(size=(1.0, 1.0, 0.5))
+    view = compute_view(np.array([[-1.0, -1.0, -0.25], [1.0, 1.0, 0.25]]), 200, 200, padding=0.0)
+    result = render_mesh(vertices, faces, 200, 200, view, cache=cache)
+
+    assert result.image.shape == (200, 200, 3) and result.image.dtype == np.float32
+    assert result.mask.shape == (200, 200) and set(np.unique(result.mask)) <= {0.0, 1.0}
+    assert result.mask.sum() == pytest.approx(100 * 100, rel=0.02)
+    np.testing.assert_array_equal(result.mask, (result.coverage >= 0.5).astype(np.float32))
+    # Linear orthographic depth: the front face is 0.25 m in front of the origin.
+    front = view.camera_z - 0.25
+    inner = result.coverage == 1.0
+    np.testing.assert_allclose(result.distance[inner], front, atol=2e-3)
+    assert result.depth[inner].min() == pytest.approx(1.0)
+    assert (result.depth[result.mask == 0] == 0).all()
+    assert (result.image[result.mask == 0] == 0).all()  # black background
+
+
+def test_soft_mask_is_coverage_and_background_colour(gl_available, cache):
+    vertices, faces = box_mesh(size=(1.0, 1.0, 1.0))
+    vertices = render.rotate_y(vertices, 30.0)  # slanted edges -> partial coverage
+    view = compute_view(np.array([[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]), 128, 128, padding=0.0)
+    result = render_mesh(vertices, faces, 128, 128, view, background="white", soft_mask=True, cache=cache)
+    np.testing.assert_array_equal(result.mask, result.coverage)
+    assert ((result.mask > 0) & (result.mask < 1)).any()
+    np.testing.assert_allclose(result.image[result.coverage == 0], 1.0)
+
+
+def test_part_labels_partition_the_silhouette(gl_available, cache):
+    vertices, faces = box_mesh(size=(1.0, 1.0, 1.0))
+    vertices = render.rotate_y(vertices, 20.0)
+    face_labels = np.where(vertices[faces].mean(axis=1)[:, 0] > 0, 16, 3)
+    view = compute_view(np.array([[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]), 96, 96, padding=0.0)
+    for soft in (False, True):
+        result = render_mesh(vertices, faces, 96, 96, view, face_labels=face_labels, soft_mask=soft, cache=cache)
+        assert result.part_masks.shape == (NUM_PARTS, 96, 96)
+        np.testing.assert_allclose(result.part_masks.sum(axis=0), result.mask, atol=1e-6)
+        present = {int(i) for i in np.flatnonzero(result.part_masks.reshape(NUM_PARTS, -1).max(axis=1))}
+        assert present == {3, 16}
+
+
+def test_renderer_is_reused_until_size_changes(gl_available, cache):
+    vertices, faces = box_mesh()
+    view = compute_view(vertices, 32, 32)
+    render_mesh(vertices, faces, 32, 32, view, cache=cache)
+    render_mesh(vertices, faces, 32, 32, view, cache=cache)
+    assert cache.creations == 1 and cache.size == (32, 32)
+    render_mesh(vertices, faces, 48, 32, compute_view(vertices, 48, 32), cache=cache)
+    assert cache.creations == 2 and cache.size == (48, 32)
+
+
+# ------------------------------------------------------------------ SMPL
+
+
+@needs_models
+def test_generate_smpl_avatar(gl_available, tmp_path):
+    from smpl_avatar import body_model, pipeline
+
+    model_type, gender = MODELS[0]
+    avatar = pipeline.generate(
+        model_type, gender, 172.0, 68.0, 256, 384, regressor_path=tmp_path / "reg.npz"
+    )
+    r = avatar.render
+    assert r.image.shape == (384, 256, 3)
+    assert r.mask.shape == r.depth.shape == (384, 256)
+    assert r.part_masks.shape == (NUM_PARTS, 384, 256)
+    np.testing.assert_allclose(r.part_masks.sum(axis=0), r.mask, atol=1e-6)
+    assert 0.03 < r.mask.mean() < 0.9
+    assert avatar.measured_height_cm == pytest.approx(172.0, abs=1.0)
+    assert avatar.measured_weight_kg == pytest.approx(68.0, abs=3.0)
+    assert (tmp_path / "reg.npz").is_file()
+    assert (model_type, gender) in body_model.cached_keys()
+
+    # Every part is visible from the front in the default T-pose.
+    visible = r.part_masks.reshape(NUM_PARTS, -1).max(axis=1)
+    assert (visible > 0).sum() >= 20
+
+
+@needs_models
+def test_arm_angle_lowers_the_wrists(gl_available):
+    from smpl_avatar import body_model, pipeline
+
+    model_type, gender = MODELS[0]
+    body = body_model.load(model_type, gender)
+    betas = np.zeros(10)
+    _, t_joints = body_model.posed_vertices(body, betas, 0.0)
+    _, a_joints = body_model.posed_vertices(body, betas, 45.0)
+    left_wrist, right_wrist, left_shoulder = 20, 21, 16
+    assert abs(t_joints[left_wrist, 1] - t_joints[left_shoulder, 1]) < 0.1
+    assert a_joints[left_wrist, 1] < a_joints[left_shoulder, 1] - 0.2
+    assert a_joints[right_wrist, 1] < a_joints[left_shoulder, 1] - 0.2
+    assert t_joints[left_shoulder, 0] > 0  # SMPL's left is +x
+
+
+@needs_models
+def test_generate_node_outputs(pack, gl_available):
+    torch = pytest.importorskip("torch")
+    model_type, gender = MODELS[0]
+    node = pack.NODE_CLASS_MAPPINGS["SMPLAvatarGenerate"]()
+    image, mask, depth, parts = node.generate(model_type, gender, 180.0, 80.0, 128, 192, arm_angle=40.0)
+    assert image.shape == depth.shape == (1, 192, 128, 3)
+    assert mask.shape == (1, 192, 128)
+    assert parts.shape == (NUM_PARTS, 192, 128)
+    assert all(t.dtype == torch.float32 for t in (image, mask, depth, parts))
+    assert float(image.min()) >= 0 and float(image.max()) <= 1
+    union = pack.NODE_CLASS_MAPPINGS["SMPLAvatarPartMaskUnion"]()
+    (full,) = union.union(parts, preset="full body")
+    assert torch.equal(full, mask)
