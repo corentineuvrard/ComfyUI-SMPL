@@ -100,7 +100,7 @@ def test_generate_smpl_avatar(gl_available, tmp_path):
 
 @needs_models
 def test_arm_angle_lowers_the_wrists(gl_available):
-    from smpl_avatar import body_model, pipeline
+    from smpl_avatar import body_model
 
     model_type, gender = MODELS[0]
     body = body_model.load(model_type, gender)

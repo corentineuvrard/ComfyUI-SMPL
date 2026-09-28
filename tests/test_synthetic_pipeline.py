@@ -79,7 +79,7 @@ def test_prepare_models_rejects_unsupported_chumpy_objects():
 @pytest.fixture()
 def synthetic_install(tmp_path, monkeypatch, pack):
     """Synthetic models + segmentation, wired into both copies of the core package."""
-    import smpl_avatar.pipeline  # noqa: F401  (plain copy used by the library tests)
+    importlib.import_module("smpl_avatar.pipeline")  # plain copy used by the library tests
 
     models = tmp_path / "body_models"
     write_clean_models(models)

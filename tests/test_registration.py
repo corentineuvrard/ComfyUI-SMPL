@@ -2,7 +2,6 @@ import subprocess
 import sys
 import textwrap
 
-import numpy as np
 import pytest
 
 from helpers import REPO
