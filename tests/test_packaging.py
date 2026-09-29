@@ -28,6 +28,8 @@ def test_requirements_do_not_pull_pypi_pyrender_or_old_pyopengl():
     assert "pyrender" not in names  # PyPI 0.1.45 pins PyOpenGL==3.1.0
     pyopengl = [line for line in requirement_lines() if line.lower().startswith("pyopengl")]
     assert pyopengl == ["PyOpenGL>=3.1.9"]  # compatible with ComfyUI's PyOpenGL>=3.1.8
+    pyglet = [line for line in requirement_lines() if line.lower().startswith("pyglet")]
+    assert pyglet == ["pyglet>=1.4.10,<3"]  # pyglet 3 drops pyglet.gl
     for heavy in ("torch", "numpy", "opencv-python", "scikit-learn"):
         assert heavy not in names
 

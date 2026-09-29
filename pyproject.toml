@@ -16,7 +16,7 @@ classifiers = [
 dependencies = [
     "smplx>=0.1.28",
     "PyOpenGL>=3.1.9",
-    "pyglet>=1.4.10",
+    "pyglet>=1.4.10,<3",
     "trimesh",
     "networkx",
     "Pillow",

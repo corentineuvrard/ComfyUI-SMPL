@@ -5,7 +5,8 @@ smplx>=0.1.28
 # PyOpenGL is NOT pinned to 3.1.0 (as pyrender 0.1.45 on PyPI does), so the
 # PyOpenGL>=3.1.8 required by ComfyUI is kept.
 PyOpenGL>=3.1.9
-pyglet>=1.4.10
+# pyglet 3 removes pyglet.gl, which the offscreen context creation needs.
+pyglet>=1.4.10,<3
 trimesh
 networkx
 Pillow
