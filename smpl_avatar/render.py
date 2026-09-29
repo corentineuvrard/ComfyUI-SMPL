@@ -464,8 +464,8 @@ class RenderWorker:
                 reply = _unpack(_read_message(self._process.stdout))
             except (OSError, EOFError) as exc:
                 process, self._process = self._process, None
-                code = process.poll()
                 _shutdown(process, timeout=1.0)
+                code = process.returncode
                 raise RuntimeError(
                     f"the SMPL Avatar render worker stopped (exit code {code}); its error output "
                     "is in the ComfyUI console. It is restarted on the next render."

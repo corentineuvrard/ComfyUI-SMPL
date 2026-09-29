@@ -24,18 +24,39 @@ def load_pack(name: str = "smpl_avatar_pack_under_test"):
     return module
 
 
-# Error texts meaning "no usable OpenGL on this machine" (missing EGL/GL/OSMesa
-# library, no display, no suitable context), as opposed to a broken renderer.
+# Root-cause texts meaning "no usable OpenGL on this machine" (a system OpenGL /
+# EGL / OSMesa library that cannot be loaded, no display, no suitable context),
+# as opposed to a broken install or renderer, which must fail the tests.
 _NO_GL_MARKERS = (
-    "egl", "opengl", "osmesa", "libgl", "glx", "display",
-    "failed to initialize pyglet window", "nosuchconfig",
+    "unable to load opengl library",
+    "unable to load egl library",
+    "unable to load osmesa library",
+    "libgl.so", "libegl.so", "libosmesa",
+    "cannot connect to",  # pyglet NoSuchDisplayException
+    "nosuchdisplayexception",
+    "nosuchconfigexception",
+    "failed to initialize pyglet window",
+    "eglerror",
 )
 
 
+def root_cause(exc: BaseException) -> BaseException:
+    """Innermost exception of a ``raise ... from ...`` / implicit context chain."""
+    seen = set()
+    while id(exc) not in seen:
+        seen.add(id(exc))
+        inner = exc.__cause__ or exc.__context__
+        if inner is None:
+            break
+        exc = inner
+    return exc
+
+
 def machine_has_no_gl(exc: BaseException) -> bool:
-    if isinstance(exc, (AttributeError, NameError, SyntaxError, TypeError)):
-        return False  # programming errors: our code or a dependency's API changed
-    text = f"{type(exc).__name__}: {exc}".lower()
+    root = root_cause(exc)
+    if isinstance(root, (AttributeError, NameError, SyntaxError, TypeError, ModuleNotFoundError)):
+        return False  # missing package or changed API: a broken install, not a missing GPU
+    text = f"{type(root).__name__}: {root}".lower()
     return any(marker in text for marker in _NO_GL_MARKERS)
 
 

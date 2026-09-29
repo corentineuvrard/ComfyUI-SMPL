@@ -192,19 +192,60 @@ def test_generate_node_outputs(pack, gl_available):
     assert torch.equal(full, mask)
 
 
+def _wrapped(inner: BaseException) -> BaseException:
+    """The exception import_pyrender() raises when importing the renderer fails."""
+    try:
+        try:
+            raise inner
+        except BaseException as original:
+            raise ImportError(
+                "The renderer could not be loaded (...). Install the node pack requirements; "
+                "on headless Linux see the README section 'OpenGL platform and headless Linux'."
+            ) from original
+    except ImportError as exc:
+        return exc
+
+
 @pytest.mark.parametrize("exc, skip", [
-    (ImportError("Unable to load EGL library"), True),
-    (OSError("Unable to load OpenGL library"), True),
+    (ImportError("Unable to load EGL library", "libEGL.so.1: cannot open shared object file"), True),
+    (_wrapped(ImportError("('Unable to load OpenGL library', 'libGL.so.1: cannot open')")), True),
     (ValueError('Failed to initialize Pyglet window with an OpenGL >= 3+ context.'), True),
-    (RuntimeError("Cannot connect to display :0"), True),
+    (RuntimeError('Cannot connect to "None"'), True),
+    # Broken installs or renderers must fail, even behind the wrapper message.
+    (_wrapped(ModuleNotFoundError("No module named 'trimesh'")), False),
+    (_wrapped(ImportError("import of smpl_avatar._vendor.pyrender.scene halted; None in sys.modules")), False),
     (AttributeError("module 'pyglet' has no attribute 'gl'"), False),  # pyglet 3
     (ImportError("cannot import name 'Scene' from 'smpl_avatar._vendor.pyrender'"), False),
+    (ValueError("Unsupported PyOpenGL platform: eglx"), False),
     (TypeError("unexpected keyword argument"), False),
 ])
 def test_only_missing_opengl_skips_rendering_tests(exc, skip):
     from helpers import machine_has_no_gl
 
     assert machine_has_no_gl(exc) is skip
+
+
+def test_real_import_failure_is_not_mistaken_for_missing_opengl():
+    """End to end: a missing dependency behind import_pyrender() must fail, not skip."""
+    import subprocess
+    import sys
+    import textwrap
+
+    from helpers import REPO
+
+    code = textwrap.dedent(f"""
+        import sys
+        sys.path[:0] = [{str(REPO)!r}, {str(REPO / "tests")!r}]
+        sys.modules["trimesh"] = None
+        from helpers import machine_has_no_gl
+        from smpl_avatar import render
+        try:
+            render.import_pyrender()
+        except ImportError as exc:
+            print(machine_has_no_gl(exc))
+    """)
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "False"
 
 
 def test_rgb_only_platform_falls_back_to_depth_coverage(monkeypatch):
@@ -219,3 +260,16 @@ def test_rgb_only_platform_falls_back_to_depth_coverage(monkeypatch):
     np.testing.assert_array_equal(result.mask, (raw_depth > 0).astype(np.float32))
     np.testing.assert_allclose(result.image[0, 0], 1.0)  # background composited
     np.testing.assert_allclose(result.image[1, 1], 200 / 255, atol=1e-6)
+
+
+def test_worker_crash_reports_its_exit_code(monkeypatch, tmp_path):
+    """A worker that dies mid-request is reported with its real exit code."""
+    stub = tmp_path / "crashing_worker.py"
+    stub.write_text("import sys\nsys.stdin.buffer.read(8)\nsys.exit(3)\n", encoding="utf-8")
+    monkeypatch.setattr(render, "WORKER_SCRIPT", stub)
+    worker = render.RenderWorker()
+    vertices, faces = box_mesh()
+    with pytest.raises(RuntimeError, match=r"exit code 3"):
+        worker.rasterize(vertices, faces, 8, 8, compute_view(vertices, 8, 8))
+    assert not worker.running
+    worker.close()
