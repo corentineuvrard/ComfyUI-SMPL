@@ -287,7 +287,9 @@ modified:
 - the headless-Linux rule above then applies to the worker as well.
 
 Headless EGL needs the NVIDIA (or Mesa) EGL libraries, e.g. `libegl1` in
-Docker images. `osmesa` (CPU) works too if OSMesa is installed.
+Docker images. `osmesa` (CPU rendering) should also work if OSMesa is
+installed, with binary (not anti-aliased) masks because pyrender's OSMesa
+backend returns no alpha channel; it has not been tested.
 
 ### Environment variables
 
@@ -298,23 +300,48 @@ Docker images. `osmesa` (CPU) works too if OSMesa is installed.
 | `SMPL_AVATAR_RENDER_PROCESS` | `auto` (default), `worker` or `inprocess`. |
 | `SMPL_AVATAR_GL_PLATFORM` | `PYOPENGL_PLATFORM` for the render worker (`egl`, `osmesa`, ...; `default` = unset). |
 | `PYOPENGL_PLATFORM` | Respected as described above. |
+| `SMPL_AVATAR_REQUIRE_GL=1` | Tests only: fail instead of skipping rendering tests when no OpenGL context can be created. |
 
 ## Compatibility
 
-Tested on 2026-09-28:
+Supported Python versions: **3.10 to 3.14**, the versions ComfyUI runs on
+(its Windows portable build ships Python 3.13). Python 3.15 (release
+candidate) already passes the test suite.
 
-- **Windows 11, inside ComfyUI 0.37.0** (frontend 1.53.6): both nodes in an API
-  workflow and in the example workflow run from the editor, chained with core
-  nodes (`MaskToImage`, `GrowMask`, `SaveImage`, `PreviewImage`); rendering
-  in the worker process with pyglet.
-- **Windows 11, test suite**: Python 3.11 / NumPy 1.26 and Python 3.10 /
-  NumPy 2.2, PyTorch 2.9, smplx 0.1.28, pyrender 0.1.45, pyglet 2.1.
-- **Linux, headless**: WSL2 Ubuntu 22.04 with `DISPLAY` unset, Mesa EGL,
-  Python 3.10, NumPy 2.2, PyTorch 2.14 (CPU): the pack selects EGL and the full
-  test suite passes. Not yet tested on a physical Linux GPU server or on macOS.
+Tested on 2026-09-29 with the dependencies a fresh `pip install -r
+requirements.txt` resolves to (torch 2.14.0 CPU, NumPy 2.2.6 on 3.10, 2.4.6 on
+3.11 and 2.5.3 on 3.12+, PyOpenGL 3.1.10, pyglet 2.1.16, trimesh 5.1.0, smplx
+0.1.28):
+
+| Python | Platform | Test suite (real SMPL / SMPL-H models) | Inside ComfyUI 0.37 |
+|---|---|---|---|
+| 3.10.21 | Windows 11 | all passed | not run |
+| 3.11.16 | Windows 11 | all passed | not run |
+| 3.12.14 | Windows 11 | all passed | workflow OK, PyOpenGL kept at 3.1.10, ComfyUI's GLSL node OK |
+| 3.13.15 | Windows 11 | all passed | workflow OK, PyOpenGL kept at 3.1.10, ComfyUI's GLSL node OK |
+| 3.14.7 | Windows 11 | all passed | workflow OK, PyOpenGL kept at 3.1.10, ComfyUI's GLSL node OK |
+| 3.15.0rc2 | Windows 11 | all passed | not run |
+| 3.10.12 | Linux, headless (WSL2 Ubuntu 22.04, Mesa EGL) | all passed | not run |
+
+In ComfyUI the node renders through the worker process (pyglet on Windows);
+on headless Linux the pack selects EGL. Not tested yet: macOS, and a Linux GPU
+server without WSL.
 
 Notes:
 
+- **Other node packs that install `pyrender` from PyPI.** pyrender 0.1.45
+  pins `PyOpenGL==3.1.0`, which downgrades the PyOpenGL ComfyUI needs.
+  Installing this pack's requirements brings PyOpenGL back to a version
+  ComfyUI supports; `pip check` may then report the PyPI pyrender's pin. This
+  pack does not use that package (it ships its own copy), so the message is
+  harmless here; `pip uninstall pyrender` removes it if nothing else needs it.
+- **Dependency bounds.** `pyglet` is capped below 3.0, whose pre-releases
+  remove the `pyglet.gl` module the offscreen context needs. The PyOpenGL
+  4.0 pre-release worked in a smoke test, so PyOpenGL is not capped.
+- **Known third-party warnings** (harmless, hidden by default): pyglet's use
+  of `ctypes._pointer_type_cache` on Windows with Python 3.14+, PyOpenGL's
+  use of `ctypes.__version__` on Python 3.15, and a `torch.jit` warning
+  emitted by one of ComfyUI's own dependencies.
 - No custom socket types: every input and output is a standard ComfyUI
   `IMAGE`, `MASK`, `INT`, `FLOAT`, `BOOLEAN` or combo.
 
@@ -330,14 +357,18 @@ exact volume polynomial, `.npz` I/O), mask union and label decoding,
 segmentation parsing, the OpenGL platform policy, camera framing, node
 registration, and an end-to-end run of both nodes on **synthetic
 SMPL-format models** (an ellipsoid with the SMPL mesh sizes, written in the
-official file format including fake chumpy objects). Rendering tests skip
-when no OpenGL context is available. Tests on the real models run when they
-are installed (for example with `SMPL_AVATAR_MODEL_DIR=...`) and skip
+official file format including fake chumpy objects), plus guards on the
+dependency list. Rendering tests skip only when the machine cannot create an
+OpenGL context (any other rendering error fails them; set
+`SMPL_AVATAR_REQUIRE_GL=1` to never skip). Tests on the real models run when
+they are installed (for example with `SMPL_AVATAR_MODEL_DIR=...`) and skip
 otherwise.
 
 ## Licensing
 
 - **This repository's code**: MIT, © 2026 Corentin Euvrard ([LICENSE](LICENSE)).
+- **Vendored pyrender** (`smpl_avatar/_vendor/pyrender`): MIT, © 2019 Matthew
+  Matl; see its `LICENSE` file and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **smplx** (runtime dependency, installed from PyPI): Max Planck
   "Software Copyright License for non-commercial scientific research
   purposes". It is not an open-source license, and using this pack means
@@ -350,7 +381,7 @@ otherwise.
 - **Shape regressor coefficients**: derived from the user's own SMPL files on
   the user's machine; not distributed.
 
-In short, the MIT license applies to this code only; it does not make the
+In short, the MIT licenses apply to this code only; they do not make the
 SMPL stack as a whole usable for commercial purposes. Please cite SMPL
 (Loper et al., 2015) and, for SMPL-H, MANO (Romero et al., 2017) in
 publications — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
