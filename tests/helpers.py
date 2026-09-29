@@ -24,6 +24,21 @@ def load_pack(name: str = "smpl_avatar_pack_under_test"):
     return module
 
 
+# Error texts meaning "no usable OpenGL on this machine" (missing EGL/GL/OSMesa
+# library, no display, no suitable context), as opposed to a broken renderer.
+_NO_GL_MARKERS = (
+    "egl", "opengl", "osmesa", "libgl", "glx", "display",
+    "failed to initialize pyglet window", "nosuchconfig",
+)
+
+
+def machine_has_no_gl(exc: BaseException) -> bool:
+    if isinstance(exc, (AttributeError, NameError, SyntaxError, TypeError)):
+        return False  # programming errors: our code or a dependency's API changed
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in _NO_GL_MARKERS)
+
+
 def box_mesh(size=(1.0, 1.0, 1.0), center=(0.0, 0.0, 0.0)):
     """Closed axis-aligned box with outward-facing triangles."""
     sx, sy, sz = (s / 2.0 for s in size)

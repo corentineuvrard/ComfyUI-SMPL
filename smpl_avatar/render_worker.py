@@ -36,6 +36,7 @@ def main() -> int:
             break
         render._write_message(channel_out, render.handle_request(payload))
     render.RENDERER_CACHE.release()
+    channel_out.close()
     return 0
 
 

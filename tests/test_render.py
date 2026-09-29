@@ -190,3 +190,32 @@ def test_generate_node_outputs(pack, gl_available):
     union = pack.NODE_CLASS_MAPPINGS["SMPLAvatarPartMaskUnion"]()
     (full,) = union.union(parts, preset="full body")
     assert torch.equal(full, mask)
+
+
+@pytest.mark.parametrize("exc, skip", [
+    (ImportError("Unable to load EGL library"), True),
+    (OSError("Unable to load OpenGL library"), True),
+    (ValueError('Failed to initialize Pyglet window with an OpenGL >= 3+ context.'), True),
+    (RuntimeError("Cannot connect to display :0"), True),
+    (AttributeError("module 'pyglet' has no attribute 'gl'"), False),  # pyglet 3
+    (ImportError("cannot import name 'Scene' from 'smpl_avatar._vendor.pyrender'"), False),
+    (TypeError("unexpected keyword argument"), False),
+])
+def test_only_missing_opengl_skips_rendering_tests(exc, skip):
+    from helpers import machine_has_no_gl
+
+    assert machine_has_no_gl(exc) is skip
+
+
+def test_rgb_only_platform_falls_back_to_depth_coverage(monkeypatch):
+    """pyrender's OSMesa backend returns RGB without alpha: coverage comes from depth."""
+    view = compute_view(np.array([[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]), 4, 3)
+    raw_depth = np.zeros((3, 4), dtype=np.float32)
+    raw_depth[1, 1:3] = 0.9
+    rgb = np.zeros((3, 4, 3), dtype=np.uint8)
+    rgb[1, 1:3] = 200
+    monkeypatch.setattr(render, "rasterize", lambda *args, **kwargs: (rgb, raw_depth, None))
+    result = render_mesh(*box_mesh(), 4, 3, view, background="white", mode="inprocess")
+    np.testing.assert_array_equal(result.mask, (raw_depth > 0).astype(np.float32))
+    np.testing.assert_allclose(result.image[0, 0], 1.0)  # background composited
+    np.testing.assert_allclose(result.image[1, 1], 200 / 255, atol=1e-6)

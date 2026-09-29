@@ -463,8 +463,9 @@ class RenderWorker:
                 _write_message(self._process.stdin, request)
                 reply = _unpack(_read_message(self._process.stdout))
             except (OSError, EOFError) as exc:
-                code = self._process.poll()
-                self._process = None
+                process, self._process = self._process, None
+                code = process.poll()
+                _shutdown(process, timeout=1.0)
                 raise RuntimeError(
                     f"the SMPL Avatar render worker stopped (exit code {code}); its error output "
                     "is in the ComfyUI console. It is restarted on the next render."
@@ -476,13 +477,25 @@ class RenderWorker:
     def close(self, timeout: float = 5.0) -> None:
         with self._lock:
             process, self._process = self._process, None
-        if process is None:
-            return
+        if process is not None:
+            _shutdown(process, timeout)
+
+
+def _shutdown(process: subprocess.Popen, timeout: float) -> None:
+    """Ask the worker to exit (EOF on stdin), kill it if needed, close both pipes."""
+    try:
         try:
             process.stdin.close()
+        except OSError:
+            pass
+        try:
             process.wait(timeout=timeout)
-        except Exception:
+        except subprocess.TimeoutExpired:
             process.kill()
+            process.wait()
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 RENDER_WORKER = RenderWorker()
@@ -541,6 +554,11 @@ def render_mesh(
     else:
         color, raw_depth, seg_rgb = rasterize(vertices, faces, width, height, view, face_labels, cache)
 
+    if color.shape[-1] == 3:
+        # Platforms without framebuffer objects (pyrender's OSMesa backend) return
+        # RGB only: fall back to a binary coverage taken from the depth buffer.
+        alpha8 = np.where(np.asarray(raw_depth) > 0, 255, 0).astype(np.uint8)
+        color = np.dstack([color, alpha8])
     alpha8 = color[..., 3]
     coverage = alpha8.astype(np.float32) / 255.0
     mask = coverage if soft_mask else (coverage >= 0.5).astype(np.float32)
