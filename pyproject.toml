@@ -38,3 +38,5 @@ includes = []
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "tests"]
+# Keep temporary test folders (synthetic model files) only for failed tests.
+tmp_path_retention_policy = "failed"

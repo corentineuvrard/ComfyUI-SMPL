@@ -32,7 +32,7 @@ def test_prepare_models_from_official_style_zip(tmp_path):
     prepare = load_prepare_models()
     archive = tmp_path / "downloads" / "official.zip"
     archive.parent.mkdir()
-    with zipfile.ZipFile(archive, "w") as zf:
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("smpl/models/basicmodel_m_lbs_10_207_0_v1.1.0.pkl", dumps_with_fake_chumpy(model_dict("SMPL")))
         zf.writestr("smpl/models/basicmodel_f_lbs_10_207_0_v1.1.0.pkl", dumps_with_fake_chumpy(model_dict("SMPL")))
         zf.writestr("mano/models/SMPLH_male.pkl", dumps_with_fake_chumpy(model_dict("SMPL-H")))
@@ -76,13 +76,20 @@ def test_prepare_models_rejects_unsupported_chumpy_objects():
         prepare.to_plain({"x": placeholder})
 
 
+@pytest.fixture(scope="session")
+def synthetic_models_dir(tmp_path_factory):
+    """Synthetic SMPL / SMPL-H files, written once per test session."""
+    root = tmp_path_factory.mktemp("synthetic_body_models")
+    write_clean_models(root)
+    return root
+
+
 @pytest.fixture()
-def synthetic_install(tmp_path, monkeypatch, pack):
+def synthetic_install(tmp_path, monkeypatch, pack, synthetic_models_dir):
     """Synthetic models + segmentation, wired into both copies of the core package."""
     importlib.import_module("smpl_avatar.pipeline")  # plain copy used by the library tests
 
-    models = tmp_path / "body_models"
-    write_clean_models(models)
+    models = synthetic_models_dir
     seg = write_segmentation(tmp_path / "seg.json")
     monkeypatch.setenv("SMPL_AVATAR_MODEL_DIR", str(models))
     cores = [sys.modules["smpl_avatar"], pack.smpl_avatar]

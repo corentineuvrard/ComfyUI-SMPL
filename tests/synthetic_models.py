@@ -71,7 +71,8 @@ def model_dict(model_type="SMPL"):
     data = {
         "v_template": vertices,
         "shapedirs": shapedirs,
-        "posedirs": np.zeros(vertices.shape + (9 * (num_joints - 1),)),
+        # All-zero pose correctives, stored as float32 to keep the files small.
+        "posedirs": np.zeros(vertices.shape + (9 * (num_joints - 1),), dtype=np.float32),
         "J_regressor": j_regressor,
         "weights": weights,
         "kintree_table": kintree,
