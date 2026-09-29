@@ -1,4 +1,11 @@
 # torch and numpy are provided by ComfyUI and are deliberately not listed.
 # smplx is distributed under the Max Planck non-commercial research license (see README).
 smplx>=0.1.28
-pyrender>=0.1.45
+# Runtime dependencies of the vendored pyrender copy (smpl_avatar/_vendor).
+# PyOpenGL is NOT pinned to 3.1.0 (as pyrender 0.1.45 on PyPI does), so the
+# PyOpenGL>=3.1.8 required by ComfyUI is kept.
+PyOpenGL>=3.1.9
+pyglet>=1.4.10
+trimesh
+networkx
+Pillow

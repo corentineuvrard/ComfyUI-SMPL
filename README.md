@@ -76,13 +76,23 @@ The order is the SMPL joint order: part *i* is the region driven by joint *i*.
    pip install -r requirements.txt
    ```
 
-   This installs `smplx` and `pyrender` (which brings `trimesh`, `PyOpenGL`
-   and `pyglet`). `torch` and `numpy` come with ComfyUI and are deliberately
+   This installs `smplx` and the rendering dependencies (`PyOpenGL`,
+   `pyglet`, `trimesh`, `networkx`, `Pillow`). `torch` and `numpy` come with
+   ComfyUI and are deliberately
    not listed; `opencv` and `scikit-learn` are not needed.
 3. Install the body model files (next section) and restart ComfyUI.
 
 The nodes appear under the **SMPL Avatar** category. Importing the pack is
-cheap: `torch`, `smplx` and `pyrender` are only imported when a node runs.
+cheap: `torch`, `smplx` and the renderer are only imported when a node runs.
+
+The renderer is [pyrender](https://github.com/mmatl/pyrender) (MIT), included
+as a patched copy in [`smpl_avatar/_vendor`](smpl_avatar/_vendor/README.md)
+rather than installed from PyPI: the last PyPI release (0.1.45, 2021) pins
+`PyOpenGL==3.1.0`, and installing it would **downgrade the PyOpenGL that
+ComfyUI itself requires** (`>=3.1.8`) and break ComfyUI's built-in GLSL node.
+The copy works with current PyOpenGL, NumPy 2 and recent Python versions; its
+changes are listed in `smpl_avatar/_vendor/README.md` and the exact diff is in
+`smpl_avatar/_vendor/pyrender.patch`.
 An example workflow (render, silhouette, depth and an upper-body part mask) is
 available from ComfyUI's template browser, or in
 [`example_workflows/smpl_avatar_maps.json`](example_workflows/smpl_avatar_maps.json).
@@ -305,8 +315,6 @@ Tested on 2026-09-28:
 
 Notes:
 
-- pyrender 0.1.45 still references `np.infty`, which NumPy 2 removed; the pack
-  restores that alias (to `np.inf`) before importing pyrender.
 - No custom socket types: every input and output is a standard ComfyUI
   `IMAGE`, `MASK`, `INT`, `FLOAT`, `BOOLEAN` or combo.
 

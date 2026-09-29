@@ -1,9 +1,12 @@
 # Third-party notices
 
 The source code in this repository is released under the MIT license (see
-`LICENSE`). It **does not include** any of the third-party data or code listed
-below. Users obtain these separately, under their own terms, which are **not**
-MIT and in several cases **do not allow commercial use**.
+`LICENSE`), except the vendored copy of pyrender in
+`smpl_avatar/_vendor/pyrender`, which keeps its own MIT license (see "Code
+included in this repository" below). The repository **does not include** the
+third-party data or Python packages listed below: users obtain them
+separately, under their own terms, which are **not** MIT and in several cases
+**do not allow commercial use**.
 
 ## Data that users download themselves
 
@@ -40,15 +43,29 @@ MIT and in several cases **do not allow commercial use**.
   (`0af78b5c581a225998b4804b4c9dd8351e155b34253947eb2541160852105ab8`).
   Set `SMPL_AVATAR_NO_DOWNLOAD=1` to disable the download.
 
+## Code included in this repository
+
+### pyrender (vendored)
+- Source: https://github.com/mmatl/pyrender, commit
+  `a59963ef890891656fd17c90e12d663233dcaa99` (2022-04-30).
+- License: MIT, "Copyright (c) 2019 Matthew Matl"; the full license text is in
+  `smpl_avatar/_vendor/pyrender/LICENSE` and applies to the files in that
+  folder.
+- Modified: viewer and text rendering removed, imports made relative, NumPy 2
+  and Python 3 clean-ups, one error-path fix. See
+  `smpl_avatar/_vendor/README.md` and the exact diff in
+  `smpl_avatar/_vendor/pyrender.patch`.
+
 ## Python packages installed as dependencies
 
 | Package | License | How it is used |
 |---|---|---|
 | [smplx](https://github.com/vchoutas/smplx) | "Software Copyright License for non-commercial scientific research purposes" (Max Planck; SMPL-X / SMPLify-X terms). Not an open-source license. | Loads SMPL / SMPL-H models at runtime. Installed from PyPI by the user; no smplx code is copied into this repository. |
-| [pyrender](https://github.com/mmatl/pyrender) | MIT | Offscreen OpenGL rendering. |
-| [trimesh](https://github.com/mikedh/trimesh) | MIT | Dependency of pyrender. |
-| [PyOpenGL](https://github.com/mcfletch/pyopengl) | BSD-style | Dependency of pyrender. |
-| [pyglet](https://github.com/pyglet/pyglet) | BSD 3-Clause | Dependency of pyrender (windowing on Windows / macOS / desktop Linux). |
+| [trimesh](https://github.com/mikedh/trimesh) | MIT | Used by the vendored pyrender. |
+| [networkx](https://github.com/networkx/networkx) | BSD 3-Clause | Scene graph of the vendored pyrender. |
+| [PyOpenGL](https://github.com/mcfletch/pyopengl) | BSD-style | OpenGL bindings used by the vendored pyrender. |
+| [pyglet](https://github.com/pyglet/pyglet) | BSD 3-Clause | OpenGL context creation on Windows / macOS / desktop Linux. |
+| [Pillow](https://github.com/python-pillow/Pillow) | MIT-CMU (HPND) | Image utilities of the vendored pyrender. |
 | NumPy, PyTorch | BSD 3-Clause | Provided by ComfyUI. |
 
 `scripts/prepare_models.py` reads model files that contain

@@ -59,21 +59,23 @@ _opengl_preloaded: Optional[bool] = None
 
 
 def import_pyrender():
-    """Import pyrender after configuring the OpenGL platform."""
+    """Import the vendored pyrender after configuring the OpenGL platform.
+
+    pyrender is vendored (``smpl_avatar/_vendor/pyrender``, MIT) because the
+    last PyPI release pins ``PyOpenGL==3.1.0``, which would downgrade the
+    ``PyOpenGL>=3.1.8`` that ComfyUI itself requires.
+    """
     global _opengl_preloaded
     if _opengl_preloaded is None:
         _opengl_preloaded = "OpenGL" in sys.modules
     gl_platform.configure()
-    if not hasattr(np, "infty"):
-        # pyrender 0.1.45 still references np.infty, which NumPy 2.0 removed.
-        np.infty = np.inf
     try:
-        import pyrender
+        from ._vendor import pyrender
     except ImportError as exc:
         raise ImportError(
-            f"pyrender could not be imported ({exc}). Install the node pack requirements "
+            f"The renderer could not be loaded ({exc}). Install the node pack requirements "
             "(pip install -r requirements.txt); on headless Linux see the README section "
-            "'Headless Linux (EGL)'."
+            "'OpenGL platform and headless Linux'."
         ) from exc
     return pyrender
 

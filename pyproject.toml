@@ -12,7 +12,15 @@ classifiers = [
 ]
 # torch and numpy are provided by ComfyUI and deliberately not listed.
 # smplx is distributed under a non-commercial research license: see README.
-dependencies = ["smplx>=0.1.28", "pyrender>=0.1.45"]
+# pyrender is vendored (smpl_avatar/_vendor); these are its runtime dependencies.
+dependencies = [
+    "smplx>=0.1.28",
+    "PyOpenGL>=3.1.9",
+    "pyglet>=1.4.10",
+    "trimesh",
+    "networkx",
+    "Pillow",
+]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]

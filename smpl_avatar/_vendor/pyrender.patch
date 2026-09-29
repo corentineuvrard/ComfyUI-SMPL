@@ -1,0 +1,288 @@
+diff --git a/pyrender/__init__.py b/pyrender/__init__.py
+index ee37098..6ac6553 100644
+--- a/pyrender/__init__.py
++++ b/pyrender/__init__.py
+@@ -9,7 +9,6 @@ from .mesh import Mesh
+ from .node import Node
+ from .scene import Scene
+ from .renderer import Renderer
+-from .viewer import Viewer
+ from .offscreen import OffscreenRenderer
+ from .version import __version__
+ from .constants import RenderFlags, TextAlign, GLTF
+@@ -18,7 +17,7 @@ __all__ = [
+     'Camera', 'PerspectiveCamera', 'OrthographicCamera', 'IntrinsicsCamera',
+     'Light', 'PointLight', 'DirectionalLight', 'SpotLight',
+     'Sampler', 'Texture', 'Material', 'MetallicRoughnessMaterial',
+-    'Primitive', 'Mesh', 'Node', 'Scene', 'Renderer', 'Viewer',
++    'Primitive', 'Mesh', 'Node', 'Scene', 'Renderer',
+     'OffscreenRenderer', '__version__', 'RenderFlags', 'TextAlign',
+     'GLTF'
+ ]
+diff --git a/pyrender/camera.py b/pyrender/camera.py
+index e019358..f788458 100644
+--- a/pyrender/camera.py
++++ b/pyrender/camera.py
+@@ -5,14 +5,12 @@ Author: Matthew Matl
+ """
+ import abc
+ import numpy as np
+-import six
+ import sys
+ 
+ from .constants import DEFAULT_Z_NEAR, DEFAULT_Z_FAR
+ 
+ 
+-@six.add_metaclass(abc.ABCMeta)
+-class Camera(object):
++class Camera(abc.ABC):
+     """Abstract base class for all cameras.
+ 
+     Note
+diff --git a/pyrender/font.py b/pyrender/font.py
+deleted file mode 100644
+index 5ac530d..0000000
+diff --git a/pyrender/fonts/OpenSans-Bold.ttf b/pyrender/fonts/OpenSans-Bold.ttf
+deleted file mode 100644
+index fd79d43..0000000
+diff --git a/pyrender/fonts/OpenSans-BoldItalic.ttf b/pyrender/fonts/OpenSans-BoldItalic.ttf
+deleted file mode 100644
+index 9bc8009..0000000
+diff --git a/pyrender/fonts/OpenSans-ExtraBold.ttf b/pyrender/fonts/OpenSans-ExtraBold.ttf
+deleted file mode 100644
+index 21f6f84..0000000
+diff --git a/pyrender/fonts/OpenSans-ExtraBoldItalic.ttf b/pyrender/fonts/OpenSans-ExtraBoldItalic.ttf
+deleted file mode 100644
+index 31cb688..0000000
+diff --git a/pyrender/fonts/OpenSans-Italic.ttf b/pyrender/fonts/OpenSans-Italic.ttf
+deleted file mode 100644
+index c90da48..0000000
+diff --git a/pyrender/fonts/OpenSans-Light.ttf b/pyrender/fonts/OpenSans-Light.ttf
+deleted file mode 100644
+index 0d38189..0000000
+diff --git a/pyrender/fonts/OpenSans-LightItalic.ttf b/pyrender/fonts/OpenSans-LightItalic.ttf
+deleted file mode 100644
+index 68299c4..0000000
+diff --git a/pyrender/fonts/OpenSans-Regular.ttf b/pyrender/fonts/OpenSans-Regular.ttf
+deleted file mode 100644
+index db43334..0000000
+diff --git a/pyrender/fonts/OpenSans-Semibold.ttf b/pyrender/fonts/OpenSans-Semibold.ttf
+deleted file mode 100644
+index 1a7679e..0000000
+diff --git a/pyrender/fonts/OpenSans-SemiboldItalic.ttf b/pyrender/fonts/OpenSans-SemiboldItalic.ttf
+deleted file mode 100644
+index 59b6d16..0000000
+diff --git a/pyrender/light.py b/pyrender/light.py
+index 333d9e4..b10272f 100644
+--- a/pyrender/light.py
++++ b/pyrender/light.py
+@@ -5,7 +5,6 @@ Author: Matthew Matl
+ """
+ import abc
+ import numpy as np
+-import six
+ 
+ from OpenGL.GL import *
+ 
+@@ -16,8 +15,7 @@ from .camera import OrthographicCamera, PerspectiveCamera
+ 
+ 
+ 
+-@six.add_metaclass(abc.ABCMeta)
+-class Light(object):
++class Light(abc.ABC):
+     """Base class for all light objects.
+ 
+     Parameters
+diff --git a/pyrender/material.py b/pyrender/material.py
+index 3ce9c2d..34502b4 100644
+--- a/pyrender/material.py
++++ b/pyrender/material.py
+@@ -7,15 +7,13 @@ Author: Matthew Matl
+ """
+ import abc
+ import numpy as np
+-import six
+ 
+ from .constants import TexFlags
+ from .utils import format_color_vector, format_texture_source
+ from .texture import Texture
+ 
+ 
+-@six.add_metaclass(abc.ABCMeta)
+-class Material(object):
++class Material(abc.ABC):
+     """Base for standard glTF 2.0 materials.
+ 
+     Parameters
+diff --git a/pyrender/mesh.py b/pyrender/mesh.py
+index 36833ea..8465391 100644
+--- a/pyrender/mesh.py
++++ b/pyrender/mesh.py
+@@ -84,8 +84,8 @@ class Mesh(object):
+         """(2,3) float : The axis-aligned bounds of the mesh.
+         """
+         if self._bounds is None:
+-            bounds = np.array([[np.infty, np.infty, np.infty],
+-                               [-np.infty, -np.infty, -np.infty]])
++            bounds = np.array([[np.inf, np.inf, np.inf],
++                               [-np.inf, -np.inf, -np.inf]])
+             for p in self.primitives:
+                 bounds[0] = np.minimum(bounds[0], p.bounds[0])
+                 bounds[1] = np.maximum(bounds[1], p.bounds[1])
+diff --git a/pyrender/offscreen.py b/pyrender/offscreen.py
+index 3401429..335e2c1 100644
+--- a/pyrender/offscreen.py
++++ b/pyrender/offscreen.py
+@@ -128,18 +128,18 @@ class OffscreenRenderer(object):
+ 
+     def _create(self):
+         if 'PYOPENGL_PLATFORM' not in os.environ:
+-            from pyrender.platforms.pyglet_platform import PygletPlatform
++            from .platforms.pyglet_platform import PygletPlatform
+             self._platform = PygletPlatform(self.viewport_width,
+                                             self.viewport_height)
+         elif os.environ['PYOPENGL_PLATFORM'] == 'egl':
+-            from pyrender.platforms import egl
++            from .platforms import egl
+             device_id = int(os.environ.get('EGL_DEVICE_ID', '0'))
+             egl_device = egl.get_device_by_index(device_id)
+             self._platform = egl.EGLPlatform(self.viewport_width,
+                                              self.viewport_height,
+                                              device=egl_device)
+         elif os.environ['PYOPENGL_PLATFORM'] == 'osmesa':
+-            from pyrender.platforms.osmesa import OSMesaPlatform
++            from .platforms.osmesa import OSMesaPlatform
+             self._platform = OSMesaPlatform(self.viewport_width,
+                                             self.viewport_height)
+         else:
+diff --git a/pyrender/platforms/base.py b/pyrender/platforms/base.py
+index c9ecda9..ce8204d 100644
+--- a/pyrender/platforms/base.py
++++ b/pyrender/platforms/base.py
+@@ -1,10 +1,8 @@
+ import abc
+ 
+-import six
+ 
+ 
+-@six.add_metaclass(abc.ABCMeta)
+-class Platform(object):
++class Platform(abc.ABC):
+     """Base class for all OpenGL platforms.
+ 
+     Parameters
+diff --git a/pyrender/platforms/pyglet_platform.py b/pyrender/platforms/pyglet_platform.py
+index a70cf7b..feb1024 100644
+--- a/pyrender/platforms/pyglet_platform.py
++++ b/pyrender/platforms/pyglet_platform.py
+@@ -1,4 +1,4 @@
+-from pyrender.constants import (TARGET_OPEN_GL_MAJOR, TARGET_OPEN_GL_MINOR,
++from ..constants import (TARGET_OPEN_GL_MAJOR, TARGET_OPEN_GL_MINOR,
+                                 MIN_OPEN_GL_MAJOR, MIN_OPEN_GL_MINOR)
+ from .base import Platform
+ 
+@@ -45,21 +45,22 @@ class PygletPlatform(Platform):
+                                   double_buffer=True,
+                                   major_version=MIN_OPEN_GL_MAJOR,
+                                   minor_version=MIN_OPEN_GL_MINOR)]
++        error = None
+         for conf in confs:
+             try:
+                 self._window = pyglet.window.Window(config=conf, visible=False,
+                                                     resizable=False,
+                                                     width=1, height=1)
+                 break
+-            except pyglet.window.NoSuchConfigException as e:
+-                pass
++            except pyglet.window.NoSuchConfigException as exc:
++                error = exc
+ 
+         if not self._window:
+             raise ValueError(
+                 'Failed to initialize Pyglet window with an OpenGL >= 3+ '
+                 'context. If you\'re logged in via SSH, ensure that you\'re '
+                 'running your script with vglrun (i.e. VirtualGL). The '
+-                'internal error message was "{}"'.format(e)
++                'internal error message was "{}"'.format(error)
+             )
+ 
+     def make_current(self):
+diff --git a/pyrender/renderer.py b/pyrender/renderer.py
+index f212907..dffb841 100644
+--- a/pyrender/renderer.py
++++ b/pyrender/renderer.py
+@@ -13,7 +13,6 @@ from .constants import (RenderFlags, TextAlign, GLTF, BufFlags, TexFlags,
+ from .shader_program import ShaderProgramCache
+ from .material import MetallicRoughnessMaterial, SpecularGlossinessMaterial
+ from .light import PointLight, SpotLight, DirectionalLight
+-from .font import FontCache
+ from .utils import format_color_vector
+ 
+ from OpenGL.GL import *
+@@ -61,7 +60,6 @@ class Renderer(object):
+ 
+         # Shader Program Cache
+         self._program_cache = ShaderProgramCache()
+-        self._font_cache = FontCache()
+         self._meshes = set()
+         self._mesh_textures = set()
+         self._shadow_textures = set()
+@@ -185,38 +183,9 @@ class Renderer(object):
+             :attr:`TextAlign.BOTTOM_LEFT` means that ``x`` and ``y`` indicate
+             the position of the bottom-left corner of the textbox.
+         """
+-        x *= self.dpscale
+-        y *= self.dpscale
+-        font_pt *= self.dpscale
+-
+-        if color is None:
+-            color = np.array([0.0, 0.0, 0.0, 1.0])
+-        else:
+-            color = format_color_vector(color, 4)
+-
+-        # Set up viewport for render
+-        self._configure_forward_pass_viewport(0)
+-
+-        # Load font
+-        font = self._font_cache.get_font(font_name, font_pt)
+-        if not font._in_context():
+-            font._add_to_context()
+-
+-        # Load program
+-        program = self._get_text_program()
+-        program._bind()
+-
+-        # Set uniforms
+-        p = np.eye(4)
+-        p[0,0] = 2.0 / self.viewport_width
+-        p[0,3] = -1.0
+-        p[1,1] = 2.0 / self.viewport_height
+-        p[1,3] = -1.0
+-        program.set_uniform('projection', p)
+-        program.set_uniform('text_color', color)
+-
+-        # Draw text
+-        font.render_string(text, x, y, scale, align)
++        raise NotImplementedError(
++            'Text rendering is not included in this vendored copy of pyrender.'
++        )
+ 
+     def read_color_buf(self):
+         """Read and return the current viewport's color buffer.
+@@ -288,9 +257,6 @@ class Renderer(object):
+         # Free shaders
+         self._program_cache.clear()
+ 
+-        # Free fonts
+-        self._font_cache.clear()
+-
+         # Free meshes
+         for mesh in self._meshes:
+             for p in mesh.primitives:
+diff --git a/pyrender/trackball.py b/pyrender/trackball.py
+deleted file mode 100644
+index 3e57a0e..0000000
+diff --git a/pyrender/viewer.py b/pyrender/viewer.py
+deleted file mode 100644
+index d2326c3..0000000
