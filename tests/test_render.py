@@ -28,7 +28,7 @@ def test_box_render_is_exact(gl_available, cache):
     assert result.image.shape == (200, 200, 3) and result.image.dtype == np.float32
     assert result.mask.shape == (200, 200) and set(np.unique(result.mask)) <= {0.0, 1.0}
     assert result.mask.sum() == pytest.approx(100 * 100, rel=0.02)
-    np.testing.assert_array_equal(result.mask, (result.coverage >= 0.5).astype(np.float32))
+    np.testing.assert_array_equal(result.mask, (np.rint(result.coverage * 255) >= 127).astype(np.float32))
     # Linear orthographic depth: the front face is 0.25 m in front of the origin.
     front = view.camera_z - 0.25
     inner = result.coverage == 1.0
@@ -59,6 +59,19 @@ def test_part_labels_partition_the_silhouette(gl_available, cache):
         np.testing.assert_allclose(result.part_masks.sum(axis=0), result.mask, atol=1e-6)
         present = {int(i) for i in np.flatnonzero(result.part_masks.reshape(NUM_PARTS, -1).max(axis=1))}
         assert present == {3, 16}
+
+
+def test_half_covered_pixels_are_inside_the_hard_mask(gl_available, cache):
+    """A 1 m square on a 2 m view at 50 px: its edges run through pixel centres."""
+    vertices, faces = box_mesh(size=(1.0, 1.0, 0.5))
+    view = compute_view(np.array([[-1.0, -1.0, -0.25], [1.0, 1.0, 0.25]]), 50, 50, padding=0.0)
+    result = render_mesh(vertices, faces, 50, 50, view, cache=cache)
+    alpha8 = np.rint(result.coverage * 255).astype(int)
+    half = (alpha8 > 64) & (alpha8 < 191)
+    assert half.sum() == 96  # the 4 x 24 edge-centre pixels
+    assert set(np.unique(alpha8[half])) <= {127, 128}
+    assert result.mask[half].all()  # half-covered pixels count as body on every driver
+    assert result.mask.sum() == 24 * 24 + 96
 
 
 def test_renderer_is_reused_until_size_changes(gl_available, cache):
@@ -116,10 +129,12 @@ def test_worker_process_matches_in_process(gl_available, cache, worker, monkeypa
     local = render_mesh(*args, face_labels=face_labels, soft_mask=True, cache=cache, mode="inprocess")
     remote = render_mesh(*args, face_labels=face_labels, soft_mask=True, mode="worker")
     assert worker.running and worker.starts == 1
-    np.testing.assert_array_equal(remote.coverage, local.coverage)
-    np.testing.assert_array_equal(remote.part_masks, local.part_masks)
-    np.testing.assert_allclose(remote.image, local.image, atol=1 / 255)
-    np.testing.assert_allclose(remote.depth, local.depth, atol=1e-4)
+    # The worker may run on another GPU (hybrid laptops): MSAA resolves can
+    # differ by one 8-bit step, so compare with that tolerance.
+    np.testing.assert_allclose(remote.coverage, local.coverage, atol=1 / 255)
+    np.testing.assert_allclose(remote.part_masks, local.part_masks, atol=1 / 255)
+    np.testing.assert_allclose(remote.image, local.image, atol=2 / 255)
+    np.testing.assert_allclose(remote.depth, local.depth, atol=1 / 255 + 1e-4)
 
     # Errors raised in the worker are reported and the worker keeps running.
     with pytest.raises(RuntimeError, match="face_labels"):

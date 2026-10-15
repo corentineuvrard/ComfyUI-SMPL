@@ -78,6 +78,13 @@ def test_union_node_execution(pack):
     (shrunk,) = node.union(parts, preset="full body", grow_px=-1)
     assert shrunk.sum() == 0
 
+    # Erosion treats the outside of the image as background: a full head mask
+    # loses its one-pixel border strip.
+    full = torch.zeros(24, 9, 9)
+    full[15] = 1.0
+    (eroded,) = node.union(full, preset="head", grow_px=-1)
+    assert eroded.sum() == 49 and eroded[0, 0].sum() == 0 and eroded[0, :, 0].sum() == 0
+
     with pytest.raises(ValueError, match="part masks"):
         node.union(torch.zeros(1, 9, 9), preset="head")
 

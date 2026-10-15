@@ -136,6 +136,44 @@ def test_pipeline_end_to_end(synthetic_install, gl_available):
     assert again.render.part_masks is None
 
 
+def test_regressor_is_refit_when_the_model_changes(synthetic_install, caplog):
+    """A stored regressor fitted on another model file is replaced; corrupt files are ignored."""
+    from smpl_avatar import body_model, pipeline, regressor
+
+    body = body_model.load("SMPL", "male")
+    path = synthetic_install / "regressor.npz"
+    first = pipeline.regressor_for(body, path)
+    assert first.meta["model_fingerprint"] == body.fingerprint
+
+    stale = regressor.LinearBetaRegressor(np.zeros((2, 10)), np.zeros(10), {"model_fingerprint": "other"})
+    regressor.save_regressors(path, {"smpl_male": stale, "smplh_female": stale})
+    pipeline._regressors.clear()
+    refit = pipeline.regressor_for(body, path)
+    assert refit.meta["model_fingerprint"] == body.fingerprint
+    stored = regressor.load_regressors(path)
+    assert stored["smpl_male"].meta["model_fingerprint"] == body.fingerprint
+    assert stored["smplh_female"].meta["model_fingerprint"] == "other"  # other entries are kept
+
+    path.write_bytes(b"garbage")
+    pipeline._regressors.clear()
+    with caplog.at_level("WARNING", logger=pipeline.LOGGER.name):
+        again = pipeline.regressor_for(body, path)
+    assert "unreadable regressor file" in caplog.text
+    assert again.meta["model_fingerprint"] == body.fingerprint
+    assert regressor.load_regressors(path)["smpl_male"].meta["model_fingerprint"] == body.fingerprint
+
+
+def test_out_of_range_request_logs_a_warning(synthetic_install, gl_available, caplog):
+    from smpl_avatar import pipeline
+
+    with caplog.at_level("WARNING", logger=pipeline.LOGGER.name):
+        pipeline.generate("SMPL", "male", 172.0, 70.0, 64, 96, part_masks=False)
+    assert "beyond what the height/weight regressor" not in caplog.text
+    with caplog.at_level("WARNING", logger=pipeline.LOGGER.name):
+        pipeline.generate("SMPL", "male", 120.0, 200.0, 64, 96, part_masks=False)
+    assert "beyond what the height/weight regressor" in caplog.text
+
+
 def test_nodes_end_to_end(synthetic_install, gl_available, pack):
     torch = pytest.importorskip("torch")
     generate = pack.NODE_CLASS_MAPPINGS["SMPLAvatarGenerate"]()

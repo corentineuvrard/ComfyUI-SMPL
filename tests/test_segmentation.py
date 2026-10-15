@@ -72,8 +72,8 @@ def test_download_verifies_checksum(tmp_path, monkeypatch):
         def __init__(self, payload):
             self.payload = payload
 
-        def read(self):
-            return self.payload
+        def read(self, size=-1):
+            return self.payload if size is None or size < 0 else self.payload[:size]
 
         def __enter__(self):
             return self
