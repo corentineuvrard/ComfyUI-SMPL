@@ -35,6 +35,7 @@ SEGMENTATION_URL = (
     f"{SEGMENTATION_COMMIT}/assets/SMPL_body_segmentation/smpl/smpl_vert_segmentation.json"
 )
 SEGMENTATION_SHA256 = "0af78b5c581a225998b4804b4c9dd8351e155b34253947eb2541160852105ab8"
+MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024  # the real file is about 110 KB
 ENV_NO_DOWNLOAD = "SMPL_AVATAR_NO_DOWNLOAD"
 
 NUM_VERTICES = 6890
@@ -152,18 +153,30 @@ def download(destination: Path = paths.SEGMENTATION_PATH, url: str = SEGMENTATIO
         "(%s). See THIRD_PARTY_NOTICES.md.", url,
     )
     with urllib.request.urlopen(url, timeout=timeout) as response:
-        payload = response.read()
+        payload = response.read(MAX_DOWNLOAD_BYTES + 1)
+    if len(payload) > MAX_DOWNLOAD_BYTES:
+        raise SegmentationUnavailableError(
+            f"the response from {url} is larger than {MAX_DOWNLOAD_BYTES} bytes; this is not "
+            "the expected 110 KB segmentation file (a captive portal or proxy page?)"
+        )
     digest = _sha256(payload)
     if digest != SEGMENTATION_SHA256:
         raise SegmentationUnavailableError(
-            f"downloaded segmentation has SHA-256 {digest}, expected {SEGMENTATION_SHA256}"
+            f"the downloaded segmentation has SHA-256 {digest}, expected {SEGMENTATION_SHA256}: "
+            "the file served by the pinned URL is not the expected one (a proxy or captive "
+            "portal may have replaced it). Check your network, or download it manually from "
+            f"{url}, verify the hash, and save it as {destination}."
         )
-    parse_segmentation(json.loads(payload.decode("utf-8")))
+    parse_segmentation(json.loads(payload.decode("utf-8")))  # verified bytes: safe to parse
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     tmp = destination.with_name(destination.name + ".tmp")
-    tmp.write_bytes(payload)
-    tmp.replace(destination)
+    try:
+        tmp.write_bytes(payload)
+        tmp.replace(destination)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
     return destination
 
 
@@ -199,6 +212,13 @@ def load_membership(path: Optional[Path] = None) -> np.ndarray:
     path = ensure_file(Path(path) if path else paths.SEGMENTATION_PATH)
     with _cache_lock:
         if path not in _membership_cache:
-            with open(path, "r", encoding="utf-8") as handle:
-                _membership_cache[path] = parse_segmentation(json.load(handle))
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    _membership_cache[path] = parse_segmentation(json.load(handle))
+            except (ValueError, OSError) as exc:  # JSON / encoding / content errors
+                raise SegmentationUnavailableError(
+                    f"the SMPL part segmentation file {path} is unreadable ({type(exc).__name__}: "
+                    f"{exc}). Delete it so that it is downloaded again, or replace it with the "
+                    f"file from {SEGMENTATION_URL} (SHA-256 {SEGMENTATION_SHA256})."
+                ) from exc
         return _membership_cache[path]

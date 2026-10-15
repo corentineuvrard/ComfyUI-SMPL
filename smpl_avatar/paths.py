@@ -28,19 +28,38 @@ class BodyModelNotFoundError(FileNotFoundError):
     """Raised when no body model file matches the requested type and gender."""
 
 
-def body_model_roots() -> List[Path]:
-    """Search order: $SMPL_AVATAR_MODEL_DIR, <ComfyUI>/models/body_models, <pack>/models."""
-    roots: List[Path] = []
+def env_model_dirs() -> List[Path]:
+    """Folders listed in $SMPL_AVATAR_MODEL_DIR (quotes around entries are tolerated)."""
+    dirs: List[Path] = []
     for entry in os.environ.get(ENV_MODEL_DIR, "").split(os.pathsep):
-        if entry.strip():
-            roots.append(Path(entry.strip()).expanduser())
+        entry = entry.strip().strip('"').strip("'").strip()
+        if entry:
+            dirs.append(Path(entry).expanduser())
+    return dirs
+
+
+def comfyui_model_dirs() -> List[Path]:
+    """ComfyUI's ``body_models`` folders: ``<models_dir>/body_models`` plus any
+    ``body_models:`` entries of ``extra_model_paths.yaml`` (empty outside ComfyUI)."""
     try:
         import folder_paths  # provided by ComfyUI
-
-        roots.append(Path(folder_paths.models_dir) / "body_models")
     except Exception:  # not running inside ComfyUI
+        return []
+    default = Path(folder_paths.models_dir) / "body_models"
+    dirs: List[Path] = []
+    try:
+        if "body_models" not in folder_paths.folder_names_and_paths:
+            folder_paths.add_model_folder_path("body_models", str(default))
+        dirs.extend(Path(p) for p in folder_paths.get_folder_paths("body_models"))
+    except Exception:  # older ComfyUI without these helpers
         pass
-    roots.append(PACK_MODELS_DIR)
+    dirs.append(default)
+    return dirs
+
+
+def body_model_roots() -> List[Path]:
+    """Search order: $SMPL_AVATAR_MODEL_DIR, ComfyUI's body_models folders, <pack>/models."""
+    roots: List[Path] = env_model_dirs() + comfyui_model_dirs() + [PACK_MODELS_DIR]
     unique: List[Path] = []
     for root in roots:
         if root not in unique:
@@ -80,10 +99,13 @@ def find_body_model(model_type: str, gender: str) -> Path:
             if files:
                 return files[0]
     searched = "\n  ".join(str(p) for p in candidate_files(model_type, gender))
+    site = "https://smpl.is.tue.mpg.de" if model_type == "SMPL" else "https://mano.is.tue.mpg.de"
     raise BodyModelNotFoundError(
         f"No {model_type} {gender} body model found. Looked for:\n  {searched}\n"
         "(folder and file names are matched case-insensitively; SMPL-H also accepts "
         "'smpl-h' / 'smpl_h' folders). Body model files are not distributed with this node "
-        "pack: download them from the official website and prepare them as described in the "
-        "README (section 'Body model files')."
+        f"pack: download them from {site} (registration required), prepare them with "
+        "'python scripts/prepare_models.py', and place them in one of the folders above or in "
+        f"a folder listed in the {ENV_MODEL_DIR} environment variable (see README, "
+        "'Body model files')."
     )

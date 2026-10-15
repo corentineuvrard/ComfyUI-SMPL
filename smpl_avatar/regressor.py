@@ -89,7 +89,8 @@ def save_regressors(path, regressors: Mapping[str, LinearBetaRegressor]) -> None
         "feature_names": np.array(FEATURE_NAMES),
         "keys": np.array(sorted(regressors)),
     }
-    for key, reg in regressors.items():
+    for key in sorted(regressors):  # fixed order: identical input gives identical bytes
+        reg = regressors[key]
         if "__" in key:
             raise ValueError(f"invalid regressor key {key!r}")
         arrays[f"{key}__weights"] = reg.weights

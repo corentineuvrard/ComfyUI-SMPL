@@ -75,6 +75,9 @@ def configure() -> Tuple[Optional[str], str]:
     if _configured is not None:
         return _configured
 
+    if os.environ.get(ENV_VAR) == "":
+        # An empty value means "unset" to us but PyOpenGL would reject it.
+        del os.environ[ENV_VAR]
     value, reason = decide(os.environ, sys.platform)
     if value is not None:
         if "OpenGL" in sys.modules:
@@ -103,6 +106,8 @@ def worker_environment(
 ) -> Tuple[Dict[str, str], str]:
     """Environment for the render worker process and a human-readable reason."""
     env = dict(environ)
+    if env.get(ENV_VAR) == "":
+        env.pop(ENV_VAR)  # empty means unset (PyOpenGL would reject "")
     override = environ.get(ENV_WORKER_OVERRIDE, "").strip()
     if override:
         if override.lower() == "default":
