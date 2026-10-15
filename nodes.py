@@ -27,7 +27,10 @@ def grow_mask(mask, pixels: int):
     if pixels > 0:
         y = F.max_pool2d(x, kernel_size=2 * radius + 1, stride=1, padding=radius)
     else:
-        y = -F.max_pool2d(-x, kernel_size=2 * radius + 1, stride=1, padding=radius)
+        # max_pool2d pads with -inf; after negation that would count everything
+        # outside the image as inside the mask, so pad with zeros explicitly.
+        x = F.pad(x, (radius, radius, radius, radius), value=0.0)
+        y = -F.max_pool2d(-x, kernel_size=2 * radius + 1, stride=1)
     return y[:, 0]
 
 
@@ -51,17 +54,22 @@ class SMPLAvatarGenerate:
                 "gender": (list(body_model.GENDERS), {"default": "male"}),
                 "height_cm": ("FLOAT", {
                     "default": 175.0, "min": 120.0, "max": 220.0, "step": 0.5,
-                    "tooltip": "Target body height in centimetres (standing, top of head to sole).",
+                    "tooltip": "Target body height in centimetres (standing, vertical extent of the "
+                               "body). Most accurate for about 150-200 cm (male) / 135-190 cm "
+                               "(female); outside, the achieved height and weight are logged with "
+                               "a warning.",
                 }),
                 "weight_kg": ("FLOAT", {
                     "default": 70.0, "min": 30.0, "max": 200.0, "step": 0.5,
                     "tooltip": "Target body weight in kilograms, obtained from the mesh volume "
-                               "at 985 kg/m^3. Most accurate for BMI 17-35.",
+                               "at 985 kg/m^3. Most accurate for BMI 17-35 within the height "
+                               "range above; a warning is logged when the mesh deviates.",
                 }),
                 "width": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 8,
                                   "tooltip": "Output image width in pixels."}),
                 "height": ("INT", {"default": 768, "min": 64, "max": 4096, "step": 8,
-                                   "tooltip": "Output image height in pixels."}),
+                                   "tooltip": "Output image height in pixels. part_masks costs 96 bytes "
+                                              "per pixel (1.5 GB at 4096x4096)."}),
             },
             "optional": {
                 "arm_angle": ("FLOAT", {
@@ -80,8 +88,9 @@ class SMPLAvatarGenerate:
                 }),
                 "padding": ("FLOAT", {
                     "default": 0.1, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "tooltip": "fit: margin around the body (0.1 = 10%). fixed: gap below the feet, "
-                               "as a fraction of half the view height.",
+                    "tooltip": "fit: extra view size around the body, as a fraction of the body "
+                               "extent (0.1: the body spans 1/1.1 of the limiting dimension). "
+                               "fixed: gap below the feet, as a fraction of half the view height.",
                 }),
                 "view_height_m": ("FLOAT", {
                     "default": 2.2, "min": 0.5, "max": 5.0, "step": 0.05,
@@ -90,13 +99,16 @@ class SMPLAvatarGenerate:
                 "background": (list(render.BACKGROUNDS), {"default": "black"}),
                 "soft_mask": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Off: binary masks (pixel coverage >= 50%). On: anti-aliased masks "
-                               "equal to the exact per-pixel coverage.",
+                    "tooltip": "Off: binary masks (at least half of the pixel covered). On: "
+                               "anti-aliased masks equal to the exact per-pixel coverage; the depth "
+                               "map and part masks are scaled by that coverage too, so edge pixels "
+                               "fall below 0.2.",
                 }),
                 "compute_part_masks": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Render the 24 body-part masks. Needs the SMPL part segmentation, "
-                               "downloaded on first use. When off, part_masks is all zeros.",
+                    "tooltip": "Render the 24 body-part masks (24 x H x W float32: 96 MB at "
+                               "1024x1024). Needs the SMPL part segmentation, downloaded on first "
+                               "use. When off, part_masks is all zeros.",
                 }),
             },
         }
@@ -106,8 +118,10 @@ class SMPLAvatarGenerate:
     OUTPUT_TOOLTIPS = (
         "Shaded render composited over the chosen background.",
         "Silhouette mask (1 = body).",
-        "Depth map: nearest point white, farthest visible body point 0.2 gray, background black.",
-        "24 masks, one per SMPL body part in canonical order (hips first). Use 'Union SMPL Part Masks'.",
+        "Depth map: nearest point white, farthest fully covered body point 0.2 gray, background "
+        "black (with soft_mask, edge pixels are scaled by their coverage).",
+        "24 masks, one per SMPL body part in canonical order (hips first); all zeros when "
+        "compute_part_masks is off. Use 'Union SMPL Part Masks'.",
     )
     FUNCTION = "generate"
     CATEGORY = CATEGORY

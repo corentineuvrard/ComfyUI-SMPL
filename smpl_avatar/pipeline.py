@@ -73,6 +73,43 @@ def face_labels_for(body: body_model.BodyModel) -> np.ndarray:
     return body.face_labels
 
 
+HEIGHT_TOLERANCE_CM = 1.0
+WEIGHT_TOLERANCE_KG = 2.0
+WEIGHT_TOLERANCE_FRACTION = 0.05
+BETA_LIMIT = 5.0  # |beta| beyond this gives unrealistic bodies
+
+
+def extrapolation_warning(
+    reg: regressor.LinearBetaRegressor,
+    height_cm: float,
+    weight_kg: float,
+    measured_h: float,
+    measured_w: float,
+    betas: np.ndarray,
+) -> Optional[str]:
+    """Explain when a request lies outside what the linear regressor reproduces well.
+
+    Returns ``None`` when the request is inside the fitted ranges and the mesh
+    matches it, otherwise a one-line message with the achieved values.
+    """
+    h_range = reg.meta.get("training_height_range_cm")
+    w_range = reg.meta.get("training_weight_range_kg")
+    reasons = []
+    if h_range and not (h_range[0] <= height_cm <= h_range[1]):
+        reasons.append(f"height {height_cm:.0f} cm is outside the fitted range {h_range[0]:.0f}-{h_range[1]:.0f} cm")
+    if w_range and not (w_range[0] <= weight_kg <= w_range[1]):
+        reasons.append(f"weight {weight_kg:.0f} kg is outside the fitted range {w_range[0]:.0f}-{w_range[1]:.0f} kg")
+    weight_tolerance = max(WEIGHT_TOLERANCE_KG, WEIGHT_TOLERANCE_FRACTION * weight_kg)
+    if abs(measured_h - height_cm) > HEIGHT_TOLERANCE_CM or abs(measured_w - weight_kg) > weight_tolerance:
+        reasons.append(f"the mesh measures {measured_h:.1f} cm / {measured_w:.1f} kg")
+    beta_max = float(np.abs(np.asarray(betas)).max())
+    if beta_max > BETA_LIMIT:
+        reasons.append(f"|beta| reaches {beta_max:.1f} (above {BETA_LIMIT:.0f} the body shape becomes unrealistic)")
+    if not reasons:
+        return None
+    return "the requested body is beyond what the height/weight regressor reproduces: " + "; ".join(reasons)
+
+
 @dataclass
 class Avatar:
     render: RenderResult
@@ -108,6 +145,9 @@ def generate(
         "[SMPL Avatar] %s %s: requested %.1f cm / %.1f kg -> mesh %.1f cm / %.1f kg",
         model_type, gender, height_cm, weight_kg, measured_h[0], measured_w[0],
     )
+    warning = extrapolation_warning(reg, height_cm, weight_kg, float(measured_h[0]), float(measured_w[0]), betas)
+    if warning:
+        LOGGER.warning("[SMPL Avatar] %s %s: %s", model_type, gender, warning)
     vertices, joints = body_model.posed_vertices(body, betas, arm_angle)
     vertices = rotate_y(vertices, yaw)
     joints = rotate_y(joints, yaw)
