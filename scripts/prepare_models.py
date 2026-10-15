@@ -190,8 +190,12 @@ NEUTRAL = re.compile(r"^(basicmodel_neutral_lbs_10_207_0_v1\.\d\.\d|smpl_neutral
 
 
 def version_key(display: str) -> Tuple[int, ...]:
-    """Sort key preferring newer official releases (``v1.1.0`` over ``v1.0.0``)."""
-    match = re.search(r"v(\d+)\.(\d+)\.(\d+)", display, re.I)
+    """Sort key preferring newer official releases (``v1.1.0`` over ``v1.0.0``).
+
+    Only the file name counts, not a version-like folder or archive name.
+    """
+    base = re.split(r"[\\/!]", display)[-1]
+    match = re.search(r"v(\d+)\.(\d+)\.(\d+)", base, re.I)
     return tuple(int(x) for x in match.groups()) if match else (0, 0, 0)
 
 

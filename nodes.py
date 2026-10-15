@@ -55,9 +55,9 @@ class SMPLAvatarGenerate:
                 "height_cm": ("FLOAT", {
                     "default": 175.0, "min": 120.0, "max": 220.0, "step": 0.5,
                     "tooltip": "Target body height in centimetres (standing, vertical extent of the "
-                               "body). Most accurate for about 150-200 cm (male) / 135-190 cm "
-                               "(female); outside, the achieved height and weight are logged with "
-                               "a warning.",
+                               "body). Fitted on about 150-215 cm (male) / 135-195 cm (female); "
+                               "outside that range, or when the mesh deviates from the request, "
+                               "the achieved height and weight are logged with a warning.",
                 }),
                 "weight_kg": ("FLOAT", {
                     "default": 70.0, "min": 30.0, "max": 200.0, "step": 0.5,
@@ -101,8 +101,8 @@ class SMPLAvatarGenerate:
                     "default": False,
                     "tooltip": "Off: binary masks (at least half of the pixel covered). On: "
                                "anti-aliased masks equal to the exact per-pixel coverage; the depth "
-                               "map and part masks are scaled by that coverage too, so edge pixels "
-                               "fall below 0.2.",
+                               "map and part masks are scaled by that coverage too (edge pixels are "
+                               "no longer held at or above the 0.2 depth floor).",
                 }),
                 "compute_part_masks": ("BOOLEAN", {
                     "default": True,

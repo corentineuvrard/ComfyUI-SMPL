@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -92,22 +93,30 @@ def extrapolation_warning(
     Returns ``None`` when the request is inside the fitted ranges and the mesh
     matches it, otherwise a one-line message with the achieved values.
     """
+    # Training bounds are the min/max of random samples: round them outward so
+    # that a request at the stated bound is not reported as outside it.
     h_range = reg.meta.get("training_height_range_cm")
     w_range = reg.meta.get("training_weight_range_kg")
-    reasons = []
-    if h_range and not (h_range[0] <= height_cm <= h_range[1]):
-        reasons.append(f"height {height_cm:.0f} cm is outside the fitted range {h_range[0]:.0f}-{h_range[1]:.0f} cm")
-    if w_range and not (w_range[0] <= weight_kg <= w_range[1]):
-        reasons.append(f"weight {weight_kg:.0f} kg is outside the fitted range {w_range[0]:.0f}-{w_range[1]:.0f} kg")
+    outside = []
+    if h_range and not (math.floor(h_range[0]) <= height_cm <= math.ceil(h_range[1])):
+        outside.append(f"height {height_cm:.0f} cm is outside the fitted range "
+                       f"{math.floor(h_range[0])}-{math.ceil(h_range[1])} cm")
+    if w_range and not (math.floor(w_range[0]) <= weight_kg <= math.ceil(w_range[1])):
+        outside.append(f"weight {weight_kg:.0f} kg is outside the fitted range "
+                       f"{math.floor(w_range[0])}-{math.ceil(w_range[1])} kg")
+    deviates = []
     weight_tolerance = max(WEIGHT_TOLERANCE_KG, WEIGHT_TOLERANCE_FRACTION * weight_kg)
     if abs(measured_h - height_cm) > HEIGHT_TOLERANCE_CM or abs(measured_w - weight_kg) > weight_tolerance:
-        reasons.append(f"the mesh measures {measured_h:.1f} cm / {measured_w:.1f} kg")
+        deviates.append(f"the mesh measures {measured_h:.1f} cm / {measured_w:.1f} kg")
     beta_max = float(np.abs(np.asarray(betas)).max())
     if beta_max > BETA_LIMIT:
-        reasons.append(f"|beta| reaches {beta_max:.1f} (above {BETA_LIMIT:.0f} the body shape becomes unrealistic)")
-    if not reasons:
+        deviates.append(f"|beta| reaches {beta_max:.1f} (above {BETA_LIMIT:.0f} the body shape becomes unrealistic)")
+    if not outside and not deviates:
         return None
-    return "the requested body is beyond what the height/weight regressor reproduces: " + "; ".join(reasons)
+    if outside:
+        return ("the request is beyond the range the height/weight regressor was fitted on: "
+                + "; ".join(outside + deviates))
+    return "the linear height/weight regressor does not match this request exactly: " + "; ".join(deviates)
 
 
 @dataclass

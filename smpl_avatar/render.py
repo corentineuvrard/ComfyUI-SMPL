@@ -299,8 +299,10 @@ class RendererCache:
     def release(self) -> None:
         with self._lock:
             if self._renderer is not None and self._thread != threading.get_ident():
-                # Deleting from another thread fails inside OpenGL; drop the
-                # references instead (the context is reclaimed at process exit).
+                # Deleting from another thread fails inside OpenGL, and so would
+                # dropping the last reference (pyrender's __del__ calls delete()):
+                # keep the renderer alive; the OS reclaims the context at exit.
+                _ORPHANED.append(self._renderer)
                 self._renderer = None
                 self._size = None
                 return
@@ -322,8 +324,14 @@ class RendererCache:
                 self._size = None
 
 
+_gl_renderer_logged = False
+
+
 def _log_gl_renderer() -> None:
-    """Log which GPU / driver renders (useful in bug reports); never fails."""
+    """Log once per process which GPU / driver renders (useful in bug reports)."""
+    global _gl_renderer_logged
+    if _gl_renderer_logged:
+        return
     try:
         from OpenGL.GL import GL_RENDERER, GL_VERSION, glGetString
 
@@ -332,10 +340,13 @@ def _log_gl_renderer() -> None:
             glGetString(GL_RENDERER).decode(errors="replace"),
             glGetString(GL_VERSION).decode(errors="replace"),
         )
+        _gl_renderer_logged = True
     except Exception:  # pragma: no cover - purely informational
         pass
 
 
+# Renderers released from a thread other than their own are kept here, never deleted.
+_ORPHANED: list = []
 RENDERER_CACHE = RendererCache()
 # Releasing at exit avoids PyOpenGL / pyglet teardown noise during interpreter shutdown.
 atexit.register(RENDERER_CACHE.release)
@@ -567,7 +578,7 @@ class RenderWorker:
                 _shutdown(process, timeout=1.0)
                 if timed_out.is_set():
                     raise RuntimeError(
-                        f"the SMPL Avatar render worker did not answer within {timeout:.0f} s and "
+                        f"the SMPL Avatar render worker did not answer within {timeout:g} s and "
                         f"was killed (set {ENV_RENDER_TIMEOUT} to raise the limit for very large "
                         "renders). It is restarted on the next render."
                     ) from exc

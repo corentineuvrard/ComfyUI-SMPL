@@ -7,7 +7,9 @@ import io
 import logging
 import math
 import pickle
+import sys
 import threading
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -86,14 +88,40 @@ def _load_npz_struct(path: Path):
     """Read an ``.npz`` model with ``allow_pickle=False`` (smplx itself would allow pickles)."""
     from smplx.utils import Struct
 
-    with np.load(path, allow_pickle=False) as data:
+    # Open the file ourselves so that it is closed even when np.load rejects it.
+    with open(path, "rb") as handle, np.load(handle, allow_pickle=False) as data:
         return Struct(**{key: data[key] for key in data.files})
+
+
+class _ThreadStdoutCapture:
+    """Captures what the owning thread prints; other threads' output passes through.
+
+    ``contextlib.redirect_stdout`` is process-wide, so a plain StringIO would
+    swallow the console output of every other thread (ComfyUI's server, other
+    nodes) while a model loads.
+    """
+
+    def __init__(self, target, owner: int) -> None:
+        self._target = target
+        self._owner = owner
+        self.captured = io.StringIO()
+
+    def write(self, text):
+        if threading.get_ident() == self._owner:
+            return self.captured.write(text)
+        return self._target.write(text)
+
+    def flush(self):
+        return self._target.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._target, name)
 
 
 def _build(model_type: str, gender: str, path: Path) -> BodyModel:
     torch, smplx = _import_smplx()
     common = dict(model_path=str(path), gender=gender, num_betas=NUM_BETAS, batch_size=1)
-    captured = io.StringIO()
+    captured = _ThreadStdoutCapture(sys.stdout, threading.get_ident())
     try:
         # smplx prints a warning about "only 10 shape coefficients" for SMPL-H
         # (and SMPL v1.0.0) files; 10 betas is exactly what this pack uses.
@@ -115,7 +143,8 @@ def _build(model_type: str, gender: str, path: Path) -> BodyModel:
                 "'python scripts/prepare_models.py' (see README, 'Body model files')."
             ) from exc
         raise
-    except (AttributeError, KeyError, TypeError, ValueError, EOFError, pickle.UnpicklingError) as exc:
+    except (AttributeError, KeyError, TypeError, ValueError, EOFError, pickle.UnpicklingError,
+            zipfile.BadZipFile) as exc:
         if model_type == "SMPL-H" and "hands_" in str(exc):
             raise BodyModelFormatError(
                 f"{path} has no MANO hand parameters. SMPL-H files from the MANO website must be "
@@ -128,8 +157,8 @@ def _build(model_type: str, gender: str, path: Path) -> BodyModel:
             "saved web page). Download the official archive again and prepare it with "
             "'python scripts/prepare_models.py' (see README, 'Body model files')."
         ) from exc
-    if captured.getvalue().strip():
-        LOGGER.debug("[SMPL Avatar] smplx said while loading %s: %s", path.name, captured.getvalue().strip())
+    if captured.captured.getvalue().strip():
+        LOGGER.debug("[SMPL Avatar] smplx said while loading %s: %s", path.name, captured.captured.getvalue().strip())
     module.eval()
     return BodyModel(
         model_type=model_type,
