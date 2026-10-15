@@ -5,8 +5,9 @@ The official SMPL and MANO / SMPL-H downloads are Python 2 pickles containing
 chumpy no longer works with current Python / NumPy releases. This script:
 
 * reads the official files, either extracted or directly inside the official
-  zip archives, without importing chumpy: chumpy objects are replaced by
-  inert placeholders during unpickling and converted to NumPy arrays;
+  zip archives, without importing chumpy or SciPy: chumpy objects and sparse
+  matrices are replaced by inert placeholders during unpickling and converted
+  to NumPy arrays;
 * converts sparse matrices to dense arrays, so loading needs neither chumpy
   nor scipy;
 * for SMPL-H, adds the MANO hand parameters that smplx expects
@@ -18,6 +19,8 @@ chumpy no longer works with current Python / NumPy releases. This script:
 
 Only plain chumpy ``Ch`` arrays are supported, which is what the official
 files contain; anything else stops the conversion with an explicit error.
+The gender-neutral SMPL model is reported and skipped: this node pack only
+offers the male and female models.
 
 Usage::
 
@@ -28,15 +31,13 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import hashlib
-import importlib
 import io
 import pickle
 import re
 import sys
 import zipfile
 from pathlib import Path
-from typing import Dict, Iterator, Optional, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
@@ -87,27 +88,53 @@ class ChumpyPlaceholder:
         return np.array(to_plain(state["x"]))
 
 
+class SparsePlaceholder:
+    """Stands in for a pickled scipy.sparse matrix; rebuilt densely without SciPy."""
+
+    sparse_class = "scipy.sparse"
+
+    def __setstate__(self, state):
+        self.__dict__["_state"] = state
+
+    def to_array(self) -> np.ndarray:
+        state = self.__dict__.get("_state")
+        kind = self.sparse_class.rsplit(".", 1)[-1]
+        if not isinstance(state, dict) or "_shape" not in state or "data" not in state:
+            raise ValueError(f"unsupported sparse matrix pickle ({self.sparse_class})")
+        data = np.asarray(state["data"])
+        dense = np.zeros(tuple(int(n) for n in state["_shape"]), dtype=data.dtype)
+        if kind in ("csc_matrix", "csr_matrix", "csc_array", "csr_array"):
+            indices = np.asarray(state["indices"], dtype=np.int64)
+            indptr = np.asarray(state["indptr"], dtype=np.int64)
+            major = np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))
+            rows, cols = (indices, major) if kind.startswith("csc") else (major, indices)
+        elif kind in ("coo_matrix", "coo_array"):
+            if "coords" in state:  # SciPy >= 1.13 pickles a (row, col) tuple
+                rows, cols = (np.asarray(c, dtype=np.int64) for c in state["coords"])
+            else:
+                rows = np.asarray(state["row"], dtype=np.int64)
+                cols = np.asarray(state["col"], dtype=np.int64)
+        else:
+            raise ValueError(f"unsupported sparse matrix type {self.sparse_class}")
+        np.add.at(dense, (rows, cols), data)  # duplicates are summed, as SciPy does
+        return dense
+
+
 class OfficialModelUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
         if module == "chumpy" or module.startswith("chumpy."):
             return type(name, (ChumpyPlaceholder,), {"chumpy_class": f"{module}.{name}"})
+        if module == "scipy.sparse" or module.startswith("scipy.sparse."):
+            return type(name, (SparsePlaceholder,), {"sparse_class": f"{module}.{name}"})
         if module.startswith("numpy.core") and int(np.__version__.split(".")[0]) >= 2:
             module = "numpy._core" + module[len("numpy.core"):]
-        if module.startswith("scipy.sparse."):
-            # Old pickles reference scipy.sparse.csc / .coo ..., which SciPy deprecates;
-            # the classes are available from the public namespace.
-            sparse = importlib.import_module("scipy.sparse")
-            if hasattr(sparse, name):
-                return getattr(sparse, name)
         return super().find_class(module, name)
 
 
 def to_plain(value):
     """Recursively replace chumpy placeholders and sparse matrices by NumPy arrays."""
-    if isinstance(value, ChumpyPlaceholder):
+    if isinstance(value, (ChumpyPlaceholder, SparsePlaceholder)):
         return value.to_array()
-    if hasattr(value, "toarray") and type(value).__module__.startswith("scipy.sparse"):
-        return np.asarray(value.toarray())
     if isinstance(value, dict):
         return {k: to_plain(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -115,39 +142,87 @@ def to_plain(value):
     return value
 
 
-def load_official(payload: bytes) -> dict:
-    data = OfficialModelUnpickler(io.BytesIO(payload), encoding="latin1").load()
+class ModelFileError(ValueError):
+    """A model file could not be read; the message names the file."""
+
+
+def load_official(payload: bytes, display: str = "<bytes>") -> dict:
+    try:
+        data = OfficialModelUnpickler(io.BytesIO(payload), encoding="latin1").load()
+    except Exception as exc:  # truncated download, HTML page, wrong file ...
+        raise ModelFileError(
+            f"{display} could not be read as a model file ({type(exc).__name__}: {exc}); "
+            "it is probably truncated or not the official pickle (re-download it)"
+        ) from exc
     if not isinstance(data, dict):
-        raise ValueError(f"expected a dict, got {type(data).__name__}")
+        raise ModelFileError(f"{display}: expected a dict, got {type(data).__name__}")
     return to_plain(data)
 
 
 # ------------------------------------------------------------ discovery
 
 
-def iter_candidates(source: Path) -> Iterator[Tuple[str, str, bytes]]:
-    """Yield ``(display_path, base_name, payload)`` for pickles in folders and zip archives."""
+def iter_candidates(source: Path) -> Iterator[Tuple[str, str, Callable[[], bytes]]]:
+    """Yield ``(display_path, base_name, read)`` for pickles in folders and zip archives.
+
+    ``read()`` loads the bytes on demand, so only files whose name matches are
+    ever read.
+    """
     paths = [source] if source.is_file() else sorted(p for p in source.rglob("*") if p.is_file())
     for path in paths:
         if path.suffix.lower() == ".pkl":
-            yield str(path), path.name, path.read_bytes()
+            yield str(path), path.name, path.read_bytes
         elif path.suffix.lower() == ".zip":
-            with zipfile.ZipFile(path) as archive:
+            try:
+                archive = zipfile.ZipFile(path)
+            except zipfile.BadZipFile:
+                print(f"note   {path} is not a valid zip archive; skipped")
+                continue
+            with archive:
                 for info in archive.infolist():
                     base = Path(info.filename).name
                     if base.lower().endswith(".pkl") and not info.is_dir():
-                        yield f"{path}!{info.filename}", base, archive.read(info)
+                        yield f"{path}!{info.filename}", base, (lambda p=path, n=info.filename:
+                                                                 zipfile.ZipFile(p).read(n))
 
 
-def discover(source: Path) -> Dict[Tuple[str, str], Tuple[str, bytes]]:
-    found: Dict[Tuple[str, str], Tuple[str, bytes]] = {}
-    for display, base, payload in iter_candidates(source):
+NEUTRAL = re.compile(r"^(basicmodel_neutral_lbs_10_207_0_v1\.\d\.\d|smpl_neutral)\.pkl$", re.I)
+
+
+def version_key(display: str) -> Tuple[int, ...]:
+    """Sort key preferring newer official releases (``v1.1.0`` over ``v1.0.0``)."""
+    match = re.search(r"v(\d+)\.(\d+)\.(\d+)", display, re.I)
+    return tuple(int(x) for x in match.groups()) if match else (0, 0, 0)
+
+
+Candidate = Tuple[str, Callable[[], bytes]]
+
+
+def discover(source: Path) -> Dict[Tuple[str, str], List[Candidate]]:
+    """Map ``(model, variant)`` to its matching files, newest official version first."""
+    found: Dict[Tuple[str, str], List[Candidate]] = {}
+    for display, base, read in iter_candidates(source):
         if base.startswith("._"):  # macOS resource forks inside zips
             continue
+        if NEUTRAL.match(base):
+            print(f"note   {display}: gender-neutral SMPL is not used by this node pack; skipped")
+            continue
         for key, pattern in PATTERNS.items():
-            if pattern.match(base) and key not in found:
-                found[key] = (display, payload)
+            if pattern.match(base):
+                found.setdefault(key, []).append((display, read))
+    for candidates in found.values():
+        candidates.sort(key=lambda c: (tuple(-v for v in version_key(c[0])), c[0]))
     return found
+
+
+def load_first(candidates: List[Candidate]) -> Optional[Tuple[str, dict]]:
+    """Load the first readable candidate; unreadable ones are reported and skipped."""
+    for display, read in candidates:
+        try:
+            return display, load_official(read(), display)
+        except (ModelFileError, OSError, KeyError, zipfile.BadZipFile) as exc:
+            print(f"error  {exc}")
+    return None
 
 
 # ----------------------------------------------------------- conversion
@@ -187,8 +262,10 @@ def main(argv: Optional[list] = None) -> int:
     args = parser.parse_args(argv)
 
     found = discover(args.source)
-    for key, (display, payload) in sorted(found.items()):
-        print(f"found {key[0]:6} {key[1]:6} {display}  sha256={hashlib.sha256(payload).hexdigest()}")
+    for key, candidates in sorted(found.items()):
+        for index, (display, _) in enumerate(candidates):
+            status = "found " if index == 0 else "also  "
+            print(f"{status} {key[0]:6} {key[1]:6} {display}" + ("" if index == 0 else "  (used only if the first one is unreadable)"))
     if not found:
         print("No official SMPL / SMPL-H / MANO files found under", args.source)
         return 1
@@ -196,7 +273,9 @@ def main(argv: Optional[list] = None) -> int:
     written = 0
     mano = {}
     if ("MANO", "left") in found and ("MANO", "right") in found:
-        mano = {side: load_official(found[("MANO", side)][1]) for side in ("left", "right")}
+        loaded = {side: load_first(found[("MANO", side)]) for side in ("left", "right")}
+        if all(loaded.values()):
+            mano = {side: loaded[side][1] for side in ("left", "right")}
 
     for key, (subdir, name) in OUTPUT_NAMES.items():
         if key not in found:
@@ -206,7 +285,11 @@ def main(argv: Optional[list] = None) -> int:
         if destination.exists() and not args.force:
             print(f"skip   {destination} (exists; use --force to overwrite)")
             continue
-        data = load_official(found[key][1])
+        loaded = load_first(found[key])
+        if loaded is None:
+            print(f"skip   {destination}: no readable {model_type} {key[1]} file")
+            continue
+        display, data = loaded
         if model_type == "SMPL-H":
             if "hands_componentsl" not in data:
                 if not mano:

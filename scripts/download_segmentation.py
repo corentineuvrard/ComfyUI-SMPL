@@ -30,7 +30,11 @@ def main(argv=None) -> int:
         print(f"Already present: {args.output}")
         return 0
     print(f"Downloading {segmentation.SEGMENTATION_URL}")
-    path = segmentation.download(args.output)
+    try:
+        path = segmentation.ensure_file(args.output, allow_download=True)
+    except segmentation.SegmentationUnavailableError as exc:
+        print(f"error: {exc}")
+        return 1
     print(f"Saved to {path} (SHA-256 {segmentation.SEGMENTATION_SHA256} verified)")
     return 0
 

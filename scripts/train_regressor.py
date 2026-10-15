@@ -39,7 +39,13 @@ def main(argv=None) -> int:
     parser.add_argument("--report", type=Path, help="also write the full fit report as JSON")
     args = parser.parse_args(argv)
 
-    stored = regressor.load_regressors(args.output) if args.output.is_file() else {}
+    stored = {}
+    if args.output.is_file():
+        try:
+            stored = regressor.load_regressors(args.output)
+        except Exception as exc:  # another format version, a corrupt file, ...
+            print(f"warning: ignoring the existing {args.output} ({type(exc).__name__}: {exc}); "
+                  "it will be replaced")
     reports = {}
     for model_type in args.model_types:
         for gender in args.genders:
