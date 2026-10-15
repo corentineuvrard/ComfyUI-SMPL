@@ -43,6 +43,17 @@ separately, under their own terms, which are **not** MIT and in several cases
   (`0af78b5c581a225998b4804b4c9dd8351e155b34253947eb2541160852105ab8`).
   Set `SMPL_AVATAR_NO_DOWNLOAD=1` to disable the download.
 
+## Demo images in this repository
+
+`docs/demo_outputs.png` and `docs/demo_part_unions.png` are 2D renders
+(shaded image, silhouette, 8-bit depth, part labels; 320 × 480 pixels per
+tile) produced by this node pack from the official SMPL and SMPL+H models.
+They contain no model data (no mesh, vertices, blend shapes or weights). They
+are shown for illustration and education only, are **not** covered by this
+repository's MIT license, and remain subject to the SMPL-Model and MANO
+licenses of the models they were rendered from. SMPL and SMPL+H body models
+© Max-Planck-Gesellschaft; see `docs/README.md` for the citations.
+
 ## Code included in this repository
 
 ### pyrender (vendored)

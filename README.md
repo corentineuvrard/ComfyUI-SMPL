@@ -18,6 +18,13 @@ be used directly as ControlNet-style conditioning:
 > license from Meshcapade / Max Planck. See [Licensing](#licensing) and
 > [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+![Outputs of Generate SMPL Avatar: image, mask, depth and coloured part masks for four bodies](docs/demo_outputs.png)
+
+*Four bodies generated from a height and a weight (the caption of each row
+gives the request and the measurements of the resulting mesh). Rendered from
+the SMPL / SMPL+H models, © Max-Planck-Gesellschaft, shown for illustration
+under their non-commercial license; see [docs/README.md](docs/README.md).*
+
 ## Nodes
 
 ### Generate SMPL Avatar (`SMPLAvatarGenerate`)
@@ -45,6 +52,8 @@ be used directly as ControlNet-style conditioning:
 | `part_masks` | MASK `[24,H,W]` | One mask per SMPL part, in the order of the table below. The 24 masks are disjoint and their sum equals `mask` (all zeros when `compute_part_masks` is off). |
 
 ### Union SMPL Part Masks (`SMPLAvatarPartMaskUnion`)
+
+![Union SMPL Part Masks: head and neck, arms and hands, legs and feet](docs/demo_part_unions.png)
 
 Takes `part_masks` and returns one `MASK` `[1,H,W]`: the union of the parts
 selected by a `preset` (head, torso, arms, hands, legs, feet, upper body,
