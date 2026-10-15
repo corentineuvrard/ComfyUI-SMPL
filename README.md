@@ -235,14 +235,18 @@ heavy, or very short and very light), because weight grows roughly with
 height × girth², which a linear map cannot follow everywhere.
 
 The node's sliders accept 120–220 cm and 30–200 kg, a wider range than the
-table above was evaluated on (the fit itself covers roughly 150–215 cm for
-men and 135–195 cm for women). Beyond it the linear map extrapolates and the
-error grows quickly: for example 220 cm / 165 kg gives a mesh about 30 kg
-(men) or 50 kg (women) too heavy, and 120 cm / 200 kg is not a realistic body
-at all (|beta| above about 5). The node logs the requested and achieved
-measurements for every render, and logs a **warning** when the request is
-outside the fitted ranges, when the mesh deviates by more than 1 cm or 5 %
-of the weight (minimum 2 kg), or when |beta| exceeds 5.
+table above was evaluated on (the fit itself covers roughly 150–215 cm and
+35–150 kg for men, 135–195 cm and 25–140 kg for women). Beyond it the linear
+map extrapolates and the error grows quickly: for example 220 cm / 165 kg
+gives a mesh about 30 kg (men) or 50 kg (women) too heavy, and 120 cm /
+200 kg is not a realistic body at all (|beta| above about 5). The node logs
+the requested and achieved measurements for every render, and logs a
+**warning** when the request is outside the fitted ranges, when the mesh
+deviates by more than 1 cm or 5 % of the weight (minimum 2 kg), or when
+|beta| exceeds 5. The deviation warning can also appear inside the evaluated
+range at its short/light and tall/heavy corners (a 155 cm / 50 kg man comes
+out about 3.5 kg heavy, for instance): it reports the achieved values, not
+a failure.
 
 "Height" is the vertical extent of the rest-pose mesh, from the top of the
 head to the lowest point of the feet (the toe tips, about 1 cm below the
@@ -269,7 +273,9 @@ heels in the SMPL pose).
   lines are relayed to the ComfyUI log with a `render worker:` prefix. On
   laptops with an integrated and a discrete GPU, Windows may run the worker
   on the integrated one; rendering stays correct and the OpenGL renderer in
-  use is logged once (`[SMPL Avatar] OpenGL renderer: ...`).
+  use is logged once per process (`[SMPL Avatar] render worker: OpenGL
+  renderer: ...` with the worker, `[SMPL Avatar] OpenGL renderer: ...`
+  in-process).
 - **In-process rendering** is tied to the thread that created the OpenGL
   context (ComfyUI runs nodes on one thread); other threads get a clear
   error and should use the worker.
@@ -281,7 +287,8 @@ heels in the SMPL pose).
   4 samples on the body (alpha ≥ 127/255, which classifies exactly-half
   pixels identically on every driver). With `soft_mask`, the mask is the
   coverage itself and the depth map and part masks are multiplied by it, so
-  anti-aliased edge pixels lie below 0.2 in the depth map.
+  an anti-aliased edge pixel's depth is its coverage times its depth value
+  (it can drop below 0.2, the value of the farthest fully covered point).
 - **Depth**: pyrender converts the depth buffer with the perspective formula
   even for orthographic cameras; the node inverts it to recover the true
   linear camera distance, then normalises it over the visible body. Only fully
