@@ -190,6 +190,7 @@ def test_model_dir_entries_tolerate_quotes_and_spaces(monkeypatch, tmp_path):
 
 def test_not_found_message_is_actionable(monkeypatch, tmp_path):
     monkeypatch.setenv(paths.ENV_MODEL_DIR, str(tmp_path))
+    monkeypatch.setattr(paths, "PACK_MODELS_DIR", tmp_path / "no-pack-models")
     with pytest.raises(paths.BodyModelNotFoundError) as info:
         paths.find_body_model("SMPL-H", "female")
     text = str(info.value)
@@ -391,15 +392,16 @@ def test_prepare_models_converts_sparse_matrices_without_scipy(tmp_path):
 
 def test_prepare_models_handles_zip_sparse_and_mano_without_scipy(tmp_path):
     """End to end on an official-style zip, in a subprocess where scipy cannot be imported."""
-    prepare = load_prepare_models()
     archive = tmp_path / "SMPL_python_v.1.1.0.zip"
     import zipfile
 
     smpl = model_dict("SMPL")
-    rows, cols = np.nonzero(smpl["J_regressor"])
+    smplh = model_dict("SMPL-H")
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("smpl/models/basicmodel_m_lbs_10_207_0_v1.1.0.pkl", dumps_with_fake_chumpy(smpl))
-        zf.writestr("mano/models/SMPLH_female.pkl", dumps_with_fake_chumpy(model_dict("SMPL-H")))
+        zf.writestr("smpl/models/basicmodel_m_lbs_10_207_0_v1.1.0.pkl",
+                    dumps_with_fake_chumpy(smpl, sparse_keys=("J_regressor",)))
+        zf.writestr("mano/models/SMPLH_female.pkl",
+                    dumps_with_fake_chumpy(smplh, sparse_keys=("J_regressor",)))
         zf.writestr("mano/models/MANO_LEFT.pkl", pickle.dumps(mano_dict()))
         zf.writestr("mano/models/MANO_RIGHT.pkl", pickle.dumps(mano_dict()))
     code = textwrap.dedent(f"""
@@ -416,7 +418,10 @@ def test_prepare_models_handles_zip_sparse_and_mano_without_scipy(tmp_path):
     with open(tmp_path / "out" / "smplh" / "SMPLH_FEMALE.pkl", "rb") as handle:
         merged = pickle.load(handle)
     assert merged["hands_meanl"].shape == (45,)
-    assert prepare.load_official is not None  # module importable in-process too
+    assert type(merged["J_regressor"]) is np.ndarray  # densified without SciPy
+    np.testing.assert_array_equal(merged["J_regressor"], smplh["J_regressor"])
+    with open(tmp_path / "out" / "smpl" / "SMPL_MALE.pkl", "rb") as handle:
+        np.testing.assert_array_equal(pickle.load(handle)["J_regressor"], smpl["J_regressor"])
 
 
 def test_download_script_fails_cleanly_offline(tmp_path, monkeypatch):
@@ -433,7 +438,7 @@ def test_download_script_fails_cleanly_offline(tmp_path, monkeypatch):
     assert module.main(["--output", str(tmp_path / "seg.json")]) == 1
 
 
-def test_train_script_tolerates_unreadable_output(tmp_path, monkeypatch):
+def test_train_script_tolerates_unreadable_output(tmp_path, monkeypatch, capsys):
     """An existing --output in another format is replaced with a warning, like the node does."""
     import importlib.util
 
@@ -443,11 +448,13 @@ def test_train_script_tolerates_unreadable_output(tmp_path, monkeypatch):
     bad = tmp_path / "reg.npz"
     np.savez(bad, format_version=np.array(99), feature_names=np.array(regressor.FEATURE_NAMES), keys=np.array([], dtype=str))
     monkeypatch.setenv(paths.ENV_MODEL_DIR, str(tmp_path / "nothing"))
+    monkeypatch.setattr(paths, "PACK_MODELS_DIR", tmp_path / "no-pack-models")
     from smpl_avatar import body_model
 
     body_model.clear_cache()
     # No model installed: the script warns about the file, then reports nothing to do.
     assert module.main(["--output", str(bad), "--model-types", "SMPL", "--genders", "male"]) == 1
+    assert "warning: ignoring the existing" in capsys.readouterr().out
 
 
 # ------------------------------------------------------------- extrapolation
@@ -457,19 +464,84 @@ def test_extrapolation_warning_logic():
     reg = regressor.LinearBetaRegressor(np.zeros((2, 10)), np.zeros(10), {
         "training_height_range_cm": [150.0, 200.0], "training_weight_range_kg": [40.0, 150.0],
     })
-    assert regressor is not None
     from smpl_avatar.pipeline import extrapolation_warning
 
     assert extrapolation_warning(reg, 175, 70, 175.3, 70.5, np.ones(10)) is None
     tall = extrapolation_warning(reg, 220, 165, 221.0, 194.0, np.ones(10) * 5.7)
-    assert tall and "outside the fitted range" in tall and "194.0 kg" in tall and "|beta| reaches 5.7" in tall
+    assert tall and "beyond the range" in tall and "outside the fitted range" in tall
+    assert "194.0 kg" in tall and "|beta| reaches 5.7" in tall
     off = extrapolation_warning(reg, 175, 70, 175.0, 78.0, np.ones(10))
-    assert off and "mesh measures" in off
+    assert off and "does not match this request exactly" in off and "mesh measures" in off
+    # Bounds are rounded outward: a request at the stated bound is inside.
+    edge = regressor.LinearBetaRegressor(np.zeros((2, 10)), np.zeros(10), {
+        "training_height_range_cm": [135.5, 194.3], "training_weight_range_kg": [24.2, 141.6],
+    })
+    assert extrapolation_warning(edge, 135, 25, 135.2, 25.5, np.ones(10)) is None
 
 
 def test_segmentation_json_is_the_pinned_one_or_absent():
-    """Guard: the on-disk file used by other tests must never be a stale partial download."""
+    """Guard: the on-disk file used by other tests must be the pinned Meshcapade file."""
+    import hashlib
+
     path = paths.SEGMENTATION_PATH
     if not path.is_file():
         pytest.skip("segmentation not downloaded")
-    json.loads(path.read_text(encoding="utf-8"))
+    payload = path.read_bytes()
+    assert hashlib.sha256(payload).hexdigest() == segmentation.SEGMENTATION_SHA256
+    assert segmentation.parse_segmentation(json.loads(payload)).shape == (6890, 24)
+
+
+def test_release_from_another_thread_keeps_the_renderer_alive(monkeypatch):
+    """pyrender's __del__ calls delete(): dropping the last reference would tear down
+    the OpenGL context on the wrong thread (noisy at ComfyUI exit)."""
+    import gc
+    import threading
+    import types
+
+    deleted = []
+
+    class FakeRenderer:
+        def __init__(self, width, height):
+            pass
+
+        def delete(self):
+            deleted.append(threading.get_ident())
+
+        __del__ = delete
+
+    monkeypatch.setattr(render, "import_pyrender", lambda: types.SimpleNamespace(OffscreenRenderer=FakeRenderer))
+    monkeypatch.setattr(render, "_log_gl_renderer", lambda: None)
+    cache = render.RendererCache()
+
+    def create():
+        with cache.renderer(16, 16):
+            pass
+
+    thread = threading.Thread(target=create)
+    thread.start()
+    thread.join()
+    cache.release()  # from a thread that did not create the renderer
+    gc.collect()
+    assert cache.size is None
+    assert deleted == []
+    render._ORPHANED.clear()
+
+
+@pytest.mark.parametrize("damage", ["truncated", "garbage"])
+def test_damaged_smplh_npz_gives_format_error(model_dir, damage):
+    from smpl_avatar import body_model
+
+    (model_dir / "smplh").mkdir()
+    target = model_dir / "smplh" / "SMPLH_MALE.npz"
+    np.savez(target, v_template=np.zeros((6890, 3)), f=np.zeros((13776, 3), dtype=np.int64))
+    payload = target.read_bytes()
+    target.write_bytes(payload[: len(payload) // 2] if damage == "truncated" else b"PK\x03\x04garbage")
+    with pytest.raises(body_model.BodyModelFormatError, match="could not be read"):
+        body_model.load("SMPL-H", "male")
+
+
+def test_version_key_ignores_folder_and_archive_names():
+    prepare = load_prepare_models()
+    assert prepare.version_key("downloads/SMPL_python_v.1.1.0.zip!smpl/basicmodel_m_lbs_10_207_0_v1.0.0.pkl") == (1, 0, 0)
+    assert prepare.version_key("C:\\models_v2.0.0\\basicmodel_f_lbs_10_207_0_v1.1.0.pkl") == (1, 1, 0)
+    assert prepare.version_key("mano/models/SMPLH_male.pkl") == (0, 0, 0)

@@ -168,10 +168,10 @@ def test_out_of_range_request_logs_a_warning(synthetic_install, gl_available, ca
 
     with caplog.at_level("WARNING", logger=pipeline.LOGGER.name):
         pipeline.generate("SMPL", "male", 172.0, 70.0, 64, 96, part_masks=False)
-    assert "beyond what the height/weight regressor" not in caplog.text
+    assert "height/weight regressor" not in caplog.text
     with caplog.at_level("WARNING", logger=pipeline.LOGGER.name):
         pipeline.generate("SMPL", "male", 120.0, 200.0, 64, 96, part_masks=False)
-    assert "beyond what the height/weight regressor" in caplog.text
+    assert "beyond the range the height/weight regressor was fitted on" in caplog.text
 
 
 def test_nodes_end_to_end(synthetic_install, gl_available, pack):

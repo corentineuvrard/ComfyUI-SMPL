@@ -110,17 +110,48 @@ class _FakeCh:
         self._dirty_vars = set()
 
 
-def dumps_with_fake_chumpy(data: dict, chumpy_keys=("shapedirs", "v_template", "posedirs")) -> bytes:
-    """Pickle ``data`` as the official files do: some arrays wrapped in chumpy.ch.Ch."""
+class _FakeCsc:
+    """Mimics how SciPy pickles a csc_matrix: its __dict__ (indptr / indices / data / _shape)."""
+
+    def __init__(self, dense):
+        dense = np.asarray(dense)
+        indptr, indices, data = [0], [], []
+        for col in range(dense.shape[1]):
+            rows = np.flatnonzero(dense[:, col])
+            indices.extend(int(r) for r in rows)
+            data.extend(dense[rows, col])
+            indptr.append(len(indices))
+        self.format = "csc"
+        self._shape = tuple(dense.shape)
+        self.indptr = np.array(indptr, dtype=np.int32)
+        self.indices = np.array(indices, dtype=np.int32)
+        self.data = np.array(data, dtype=dense.dtype)
+        self.maxprint = 50
+
+
+def dumps_with_fake_chumpy(data: dict, chumpy_keys=("shapedirs", "v_template", "posedirs"),
+                           sparse_keys=()) -> bytes:
+    """Pickle ``data`` as the official files do: some arrays wrapped in chumpy.ch.Ch,
+    and ``sparse_keys`` stored as ``scipy.sparse.csc.csc_matrix`` objects."""
     fake_pkg = types.ModuleType("chumpy")
     fake_mod = types.ModuleType("chumpy.ch")
     cls = type("Ch", (_FakeCh,), {"__module__": "chumpy.ch"})
     fake_mod.Ch = cls
     fake_pkg.ch = fake_mod
-    saved = {name: sys.modules.get(name) for name in ("chumpy", "chumpy.ch")}
-    sys.modules.update({"chumpy": fake_pkg, "chumpy.ch": fake_mod})
+    csc = type("csc_matrix", (_FakeCsc,), {"__module__": "scipy.sparse.csc"})
+    fake_scipy = types.ModuleType("scipy")
+    fake_sparse = types.ModuleType("scipy.sparse")
+    fake_csc = types.ModuleType("scipy.sparse.csc")
+    fake_csc.csc_matrix = csc
+    fake_sparse.csc = fake_csc
+    fake_scipy.sparse = fake_sparse
+    fakes = {"chumpy": fake_pkg, "chumpy.ch": fake_mod,
+             "scipy": fake_scipy, "scipy.sparse": fake_sparse, "scipy.sparse.csc": fake_csc}
+    saved = {name: sys.modules.get(name) for name in fakes}
+    sys.modules.update(fakes)
     try:
-        wrapped = {k: (cls(v) if k in chumpy_keys else v) for k, v in data.items()}
+        wrapped = {k: (cls(v) if k in chumpy_keys else csc(v) if k in sparse_keys else v)
+                   for k, v in data.items()}
         return pickle.dumps(wrapped, protocol=2)
     finally:
         for name, module in saved.items():
