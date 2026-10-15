@@ -430,11 +430,12 @@ otherwise.
 
 ### Publishing to the Comfy Registry
 
-`pyproject.toml` already carries the `[project]` and `[tool.comfy]` metadata
-(node id `smpl-avatar`, immutable once published). Before the first
-`comfy node publish`, set `PublisherId` in `[tool.comfy]` to the publisher
-created on https://registry.comfy.org and make sure `[project.urls]` points to
-the public repository; bump `version` for every release.
+`pyproject.toml` carries the `[project]` and `[tool.comfy]` metadata: node id
+`smpl-avatar` and publisher `corentineuvrard`, both immutable once published.
+Publishing takes a registry API key created for that publisher on
+https://registry.comfy.org (`comfy node publish` asks for it; never commit
+it). Make sure `[project.urls]` points to the public repository and bump
+`version` for every release.
 
 ## Licensing
 

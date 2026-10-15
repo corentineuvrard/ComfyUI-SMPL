@@ -30,7 +30,7 @@ test = ["pytest>=8"]
 Repository = "https://github.com/corentineuvrard/ComfyUI-SMPL"
 
 [tool.comfy]
-PublisherId = ""
+PublisherId = "corentineuvrard"
 DisplayName = "SMPL Avatar"
 Icon = ""
 includes = []
