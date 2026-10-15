@@ -48,10 +48,14 @@ DEPTH_FAR_VALUE = 0.2
 
 
 LOGGER = logging.getLogger(__name__)
+LOG_PREFIX = "[SMPL Avatar]"
 
 ENV_RENDER_PROCESS = "SMPL_AVATAR_RENDER_PROCESS"
+ENV_RENDER_TIMEOUT = "SMPL_AVATAR_RENDER_TIMEOUT"
 RENDER_MODES = ("auto", "worker", "inprocess")
+DEFAULT_RENDER_TIMEOUT = 300.0  # seconds per worker reply
 WORKER_SCRIPT = Path(__file__).resolve().parent / "render_worker.py"
+WORKER_MAGIC = b"SMPLAVW1"  # first bytes a healthy worker writes on its stdout
 
 # Whether OpenGL had been imported by another package before this module first
 # imported pyrender (None until then).
@@ -260,23 +264,32 @@ def decode_labels(seg_rgb: np.ndarray, region: np.ndarray) -> np.ndarray:
 
 
 class RendererCache:
-    """Keeps one ``pyrender.OffscreenRenderer``; it is recreated only when the size changes."""
+    """Keeps one ``pyrender.OffscreenRenderer``; it is recreated only when the size changes.
+
+    An OpenGL context belongs to the thread that created it, so the renderer
+    may only be used from that thread (ComfyUI runs nodes on a single
+    executor thread; other callers can use the worker process).
+    """
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._renderer = None
         self._size: Optional[Tuple[int, int]] = None
+        self._thread: Optional[int] = None
         self.creations = 0
 
     @contextmanager
     def renderer(self, width: int, height: int) -> Iterator[object]:
         with self._lock:
+            self._check_thread()
             if self._renderer is None or self._size != (width, height):
                 self._release_locked()
                 pyrender = import_pyrender()
                 self._renderer = pyrender.OffscreenRenderer(width, height)
                 self._size = (width, height)
+                self._thread = threading.get_ident()
                 self.creations += 1
+                _log_gl_renderer()
             yield self._renderer
 
     @property
@@ -285,7 +298,20 @@ class RendererCache:
 
     def release(self) -> None:
         with self._lock:
+            if self._renderer is not None and self._thread != threading.get_ident():
+                # Deleting from another thread fails inside OpenGL; drop the
+                # references instead (the context is reclaimed at process exit).
+                self._renderer = None
+                self._size = None
+                return
             self._release_locked()
+
+    def _check_thread(self) -> None:
+        if self._renderer is not None and self._thread != threading.get_ident():
+            raise RuntimeError(
+                "in-process rendering must stay on the thread that created the OpenGL "
+                f"context; render from that thread or set {ENV_RENDER_PROCESS}=worker"
+            )
 
     def _release_locked(self) -> None:
         if self._renderer is not None:
@@ -296,7 +322,23 @@ class RendererCache:
                 self._size = None
 
 
+def _log_gl_renderer() -> None:
+    """Log which GPU / driver renders (useful in bug reports); never fails."""
+    try:
+        from OpenGL.GL import GL_RENDERER, GL_VERSION, glGetString
+
+        LOGGER.info(
+            "[SMPL Avatar] OpenGL renderer: %s (%s)",
+            glGetString(GL_RENDERER).decode(errors="replace"),
+            glGetString(GL_VERSION).decode(errors="replace"),
+        )
+    except Exception:  # pragma: no cover - purely informational
+        pass
+
+
 RENDERER_CACHE = RendererCache()
+# Releasing at exit avoids PyOpenGL / pyglet teardown noise during interpreter shutdown.
+atexit.register(RENDERER_CACHE.release)
 
 
 def rasterize(
@@ -430,12 +472,42 @@ def handle_request(payload: bytes, cache: RendererCache = RENDERER_CACHE) -> byt
         return _pack(error=np.array(f"{type(exc).__name__}: {exc}"))
 
 
+def render_timeout() -> Optional[float]:
+    """Seconds to wait for one worker reply ($SMPL_AVATAR_RENDER_TIMEOUT; 0 = no limit)."""
+    raw = os.environ.get(ENV_RENDER_TIMEOUT, "").strip()
+    if not raw:
+        return DEFAULT_RENDER_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{ENV_RENDER_TIMEOUT} must be a number of seconds, got {raw!r}") from None
+    return value if value > 0 else None
+
+
+def _forward_stderr(stream, logger=LOGGER) -> None:
+    """Relay the worker's stderr (its logs, driver messages, tracebacks) to our logger."""
+    with stream:
+        for raw in iter(stream.readline, b""):
+            line = raw.decode("utf-8", "replace").rstrip()
+            if line.startswith(LOG_PREFIX + " "):
+                line = line[len(LOG_PREFIX) + 1:]
+            logger.info("%s render worker: %s", LOG_PREFIX, line)
+
+
 class RenderWorker:
-    """Persistent child process running :func:`rasterize`, started on first use."""
+    """Persistent child process running :func:`rasterize`, started on first use.
+
+    Protocol safety: a healthy worker writes :data:`WORKER_MAGIC` as the very
+    first bytes of its stdout, so anything printed earlier by the interpreter
+    start-up (a ``.pth`` file, ``sitecustomize``) is detected instead of being
+    parsed as a reply. A reply that does not arrive within
+    :func:`render_timeout` seconds gets the worker killed and restarted.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
+        self._handshaken = False
         self.starts = 0
 
     @property
@@ -444,41 +516,83 @@ class RenderWorker:
 
     def _start(self) -> None:
         env, reason = gl_platform.worker_environment(os.environ, sys.platform, set(sys.modules))
-        LOGGER.info("[SMPL Avatar] Starting the render worker process (OpenGL: %s)", reason)
+        LOGGER.info("%s Starting the render worker process (OpenGL: %s)", LOG_PREFIX, reason)
         kwargs = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self._process = subprocess.Popen(
             [sys.executable, str(WORKER_SCRIPT)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, **kwargs,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, **kwargs,
         )
+        self._handshaken = False
+        threading.Thread(
+            target=_forward_stderr, args=(self._process.stderr,),
+            name="smpl-avatar-render-worker-stderr", daemon=True,
+        ).start()
         self.starts += 1
 
     def rasterize(self, vertices, faces, width, height, view, face_labels=None):
         request = encode_request(vertices, faces, width, height, view, face_labels)
+        timeout = render_timeout()
         with self._lock:
             if not self.running:
                 self._start()
+            process = self._process
+            timed_out = threading.Event()
+
+            def _kill_on_timeout() -> None:
+                timed_out.set()
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+
+            timer = threading.Timer(timeout, _kill_on_timeout) if timeout else None
+            if timer is not None:
+                timer.daemon = True
+                timer.start()
             try:
-                _write_message(self._process.stdin, request)
-                reply = _unpack(_read_message(self._process.stdout))
-            except (OSError, EOFError) as exc:
-                process, self._process = self._process, None
+                _write_message(process.stdin, request)
+                if not self._handshaken:
+                    head = _read_exact(process.stdout, len(WORKER_MAGIC))
+                    if head != WORKER_MAGIC:
+                        raise OSError(
+                            f"unexpected output on the render worker's stdout: {head!r} "
+                            "(something printed during the interpreter start-up?)"
+                        )
+                    self._handshaken = True
+                reply = _unpack(_read_message(process.stdout))
+            except (OSError, EOFError, ValueError) as exc:
+                self._process = None
                 _shutdown(process, timeout=1.0)
-                code = process.returncode
+                if timed_out.is_set():
+                    raise RuntimeError(
+                        f"the SMPL Avatar render worker did not answer within {timeout:.0f} s and "
+                        f"was killed (set {ENV_RENDER_TIMEOUT} to raise the limit for very large "
+                        "renders). It is restarted on the next render."
+                    ) from exc
                 raise RuntimeError(
-                    f"the SMPL Avatar render worker stopped (exit code {code}); its error output "
-                    "is in the ComfyUI console. It is restarted on the next render."
+                    f"the SMPL Avatar render worker stopped (exit code {process.returncode}): {exc}. "
+                    "Its output was logged above (ComfyUI log). It is restarted on the next render."
                 ) from exc
+            finally:
+                if timer is not None:
+                    timer.cancel()
         if "error" in reply:
             raise RuntimeError(f"render worker: {reply['error']}")
         return reply["color"], reply["raw_depth"], reply.get("seg")
 
     def close(self, timeout: float = 5.0) -> None:
-        with self._lock:
+        # A render blocked on a hung worker holds the lock: never wait for it
+        # forever (this also runs at exit). Killing the worker unblocks it.
+        acquired = self._lock.acquire(timeout=timeout)
+        try:
             process, self._process = self._process, None
+        finally:
+            if acquired:
+                self._lock.release()
         if process is not None:
-            _shutdown(process, timeout)
+            _shutdown(process, timeout if acquired else 0.0)
 
 
 def _shutdown(process: subprocess.Popen, timeout: float) -> None:
@@ -561,7 +675,10 @@ def render_mesh(
         color = np.dstack([color, alpha8])
     alpha8 = color[..., 3]
     coverage = alpha8.astype(np.float32) / 255.0
-    mask = coverage if soft_mask else (coverage >= 0.5).astype(np.float32)
+    # Hard mask: at least half of the 4 MSAA samples on the body. A pixel with
+    # exactly 2 samples resolves to alpha 127 or 128 depending on the driver,
+    # so the threshold sits below both values (any value in 65..127 works).
+    mask = coverage if soft_mask else (alpha8 >= 127).astype(np.float32)
 
     # pyrender's RGBA output is the MSAA average of body and a transparent black
     # background, i.e. premultiplied by coverage: composite with "over".

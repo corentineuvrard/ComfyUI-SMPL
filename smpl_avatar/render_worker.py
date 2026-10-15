@@ -2,9 +2,10 @@
 
 Started by :class:`smpl_avatar.render.RenderWorker` with the OpenGL platform
 chosen for it (see ``gl_platform.worker_environment``). Protocol on
-stdin/stdout: each message is an 8-byte little-endian length followed by an
-``.npz`` payload (NumPy arrays only, loaded without pickle). The worker exits
-when its stdin is closed.
+stdin/stdout: the worker first writes ``WORKER_MAGIC``, then each message is
+an 8-byte little-endian length followed by an ``.npz`` payload (NumPy arrays
+only, loaded without pickle). The worker exits when its stdin is closed.
+Everything else it prints goes to stderr, which the parent relays to its log.
 """
 
 import logging
@@ -29,6 +30,8 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
     from smpl_avatar import render
 
+    channel_out.write(render.WORKER_MAGIC)
+    channel_out.flush()
     while True:
         try:
             payload = render._read_message(channel_in)
