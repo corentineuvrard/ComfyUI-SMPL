@@ -19,10 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-This license covers the source code of this repository, except the vendored
-copy of pyrender in smpl_avatar/_vendor/pyrender, which is distributed under
-its own MIT license (Copyright (c) 2019 Matthew Matl, see the LICENSE file in
-that folder). It does not cover the SMPL / SMPL-H / MANO body models, the smplx
-package, or the SMPL part segmentation file, which users obtain separately
-under their own terms; see README.md and THIRD_PARTY_NOTICES.md.

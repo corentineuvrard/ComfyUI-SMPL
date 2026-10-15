@@ -41,8 +41,8 @@ be used directly as ControlNet-style conditioning:
 |---|---|---|
 | `image` | IMAGE `[1,H,W,3]` | Shaded render composited over the background. |
 | `mask` | MASK `[1,H,W]` | Silhouette, 1 = body. |
-| `depth` | IMAGE `[1,H,W,3]` | Nearest point 1.0, farthest visible body point 0.2, background 0. |
-| `part_masks` | MASK `[24,H,W]` | One mask per SMPL part, in the order of the table below. The 24 masks are disjoint and their sum equals `mask`. |
+| `depth` | IMAGE `[1,H,W,3]` | Nearest point 1.0, farthest fully covered body point 0.2, background 0 (edge pixels scaled by coverage with `soft_mask`). |
+| `part_masks` | MASK `[24,H,W]` | One mask per SMPL part, in the order of the table below. The 24 masks are disjoint and their sum equals `mask` (all zeros when `compute_part_masks` is off). |
 
 ### Union SMPL Part Masks (`SMPLAvatarPartMaskUnion`)
 
@@ -70,11 +70,18 @@ The order is the SMPL joint order: part *i* is the region driven by joint *i*.
 
 1. Clone this repository into `ComfyUI/custom_nodes/` (or install it with
    ComfyUI-Manager).
-2. Install the requirements in the Python environment that runs ComfyUI:
+2. Install the requirements with the Python that runs ComfyUI, from the
+   pack's folder:
 
    ```bash
+   cd ComfyUI/custom_nodes/ComfyUI-SMPL
    pip install -r requirements.txt
    ```
+
+   Windows portable build (no `pip` on the PATH): from the
+   `ComfyUI_windows_portable` folder run
+   `python_embeded\python.exe -m pip install -r ComfyUI\custom_nodes\ComfyUI-SMPL\requirements.txt`.
+   ComfyUI-Manager installs the requirements itself.
 
    This installs `smplx` and the rendering dependencies (`PyOpenGL`,
    `pyglet`, `trimesh`, `networkx`, `Pillow`). `torch` and `numpy` come with
@@ -122,15 +129,25 @@ The official files cannot be loaded by `smplx` as downloaded:
 2. **SMPL-H must be merged with the MANO hand parameters.** `smplx` reads the
    hand PCA basis and mean pose (`hands_componentsl/r`, `hands_meanl/r`) from
    the SMPL-H file itself; its `tools/merge_smplh_mano.py` does that merge
-   (also a Python 2 script).
+   (a Python 3 script, but it still needs chumpy to read the unconverted
+   official files).
 
 This repository ships a Python 3 script that does both steps **without
-chumpy**. Point it at the folder where you saved the downloads (zip archives
-are read directly, no need to extract them):
+chumpy** (and without SciPy: it only needs NumPy). Run it with any Python 3.10+
+that has NumPy, for example the one that runs ComfyUI, and point it at the
+folder where you saved the downloads (zip archives are read directly, no need
+to extract them):
 
 ```bash
 python scripts/prepare_models.py --source path/to/downloads
 ```
+
+(Windows portable build:
+`python_embeded\python.exe ComfyUI\custom_nodes\ComfyUI-SMPL\scripts\prepare_models.py --source ...`.)
+When several versions of a file are present, the newest official release is
+used and the others are listed; unreadable files are reported and skipped.
+The gender-neutral SMPL model (`basicmodel_neutral_...`) is ignored: this
+node pack offers the male and female models only.
 
 It writes the layout expected by `smplx`:
 
@@ -148,12 +165,18 @@ already cleaned with the official `smplx` tools work as they are.
 
 1. every folder listed in the environment variable `SMPL_AVATAR_MODEL_DIR`
    (separated by `;` on Windows, `:` elsewhere),
-2. `ComfyUI/models/body_models/`,
+2. every `body_models:` entry of ComfyUI's `extra_model_paths.yaml`, then
+   `ComfyUI/models/body_models/`,
 3. this pack's `models/` folder.
 
 Each location uses the `smpl/` + `smplh/` layout above (folder and file names
-are matched case-insensitively; `smpl-h/` is accepted too). Models are loaded
-lazily on first use and cached per (model type, gender).
+are matched case-insensitively; `smpl-h/` is accepted too; SMPL-H files may
+also be `.npz` archives of plain arrays, loaded without pickle). Models are
+loaded lazily on first use and cached per (model type, gender).
+
+**Trust note.** The `.pkl` model files are Python pickles, which can execute
+code when loaded: only use files you downloaded from the official sites
+yourself (or produced from them with `scripts/prepare_models.py`).
 
 ## Shape regressor
 
@@ -209,8 +232,21 @@ files; heights 155–200 cm for men and 145–190 cm for women):
 Height is reproduced almost exactly. Weight is accurate for common body
 shapes; the largest errors occur at extreme combinations (very tall and very
 heavy, or very short and very light), because weight grows roughly with
-height × girth², which a linear map cannot follow everywhere. The node logs
-the requested and achieved measurements for every render.
+height × girth², which a linear map cannot follow everywhere.
+
+The node's sliders accept 120–220 cm and 30–200 kg, a wider range than the
+table above was evaluated on (the fit itself covers roughly 150–215 cm for
+men and 135–195 cm for women). Beyond it the linear map extrapolates and the
+error grows quickly: for example 220 cm / 165 kg gives a mesh about 30 kg
+(men) or 50 kg (women) too heavy, and 120 cm / 200 kg is not a realistic body
+at all (|beta| above about 5). The node logs the requested and achieved
+measurements for every render, and logs a **warning** when the request is
+outside the fitted ranges, when the mesh deviates by more than 1 cm or 5 %
+of the weight (minimum 2 kg), or when |beta| exceeds 5.
+
+"Height" is the vertical extent of the rest-pose mesh, from the top of the
+head to the lowest point of the feet (the toe tips, about 1 cm below the
+heels in the SMPL pose).
 
 ## Rendering
 
@@ -227,11 +263,25 @@ the requested and achieved measurements for every render.
   dies, stopped with ComfyUI) that exchanges plain NumPy arrays with the node;
   everything else runs in the ComfyUI process. Otherwise (older ComfyUI,
   scripts, tests) rendering happens in-process. This also keeps a graphics
-  driver crash from taking ComfyUI down.
+  driver crash from taking ComfyUI down. A reply that does not arrive within
+  `SMPL_AVATAR_RENDER_TIMEOUT` seconds (default 300) gets the worker killed
+  and restarted, so a driver hang cannot freeze ComfyUI. The worker's own log
+  lines are relayed to the ComfyUI log with a `render worker:` prefix. On
+  laptops with an integrated and a discrete GPU, Windows may run the worker
+  on the integrated one; rendering stays correct and the OpenGL renderer in
+  use is logged once (`[SMPL Avatar] OpenGL renderer: ...`).
+- **In-process rendering** is tied to the thread that created the OpenGL
+  context (ComfyUI runs nodes on one thread); other threads get a clear
+  error and should use the worker.
 - **Silhouette**: taken from the alpha channel of the render, i.e. the exact
   4× MSAA coverage of each pixel by the mesh — not from thresholding the
   coloured image. `soft_mask` returns the coverage itself; otherwise pixels
   with coverage ≥ 50 % are 1.
+- **Masks and MSAA**: the hard mask keeps pixels with at least half of their
+  4 samples on the body (alpha ≥ 127/255, which classifies exactly-half
+  pixels identically on every driver). With `soft_mask`, the mask is the
+  coverage itself and the depth map and part masks are multiplied by it, so
+  anti-aliased edge pixels lie below 0.2 in the depth map.
 - **Depth**: pyrender converts the depth buffer with the perspective formula
   even for orthographic cameras; the node inverts it to recover the true
   linear camera distance, then normalises it over the visible body. Only fully
@@ -298,8 +348,9 @@ backend returns no alpha channel; it has not been tested.
 | `SMPL_AVATAR_MODEL_DIR` | Extra folder(s) searched for body model files. |
 | `SMPL_AVATAR_NO_DOWNLOAD=1` | Never download the part segmentation. |
 | `SMPL_AVATAR_RENDER_PROCESS` | `auto` (default), `worker` or `inprocess`. |
+| `SMPL_AVATAR_RENDER_TIMEOUT` | Seconds to wait for one worker reply (default 300; 0 = no limit). |
 | `SMPL_AVATAR_GL_PLATFORM` | `PYOPENGL_PLATFORM` for the render worker (`egl`, `osmesa`, ...; `default` = unset). |
-| `PYOPENGL_PLATFORM` | Respected as described above. |
+| `PYOPENGL_PLATFORM` | Respected as described above (an empty value counts as unset). |
 | `SMPL_AVATAR_REQUIRE_GL=1` | Tests only: fail instead of skipping rendering tests when no OpenGL context can be created. |
 
 ## Compatibility
@@ -338,10 +389,16 @@ Notes:
 - **Dependency bounds.** `pyglet` is capped below 3.0, whose pre-releases
   remove the `pyglet.gl` module the offscreen context needs. The PyOpenGL
   4.0 pre-release worked in a smoke test, so PyOpenGL is not capped.
-- **Known third-party warnings** (harmless, hidden by default): pyglet's use
-  of `ctypes._pointer_type_cache` on Windows with Python 3.14+, PyOpenGL's
-  use of `ctypes.__version__` on Python 3.15, and a `torch.jit` warning
-  emitted by one of ComfyUI's own dependencies.
+- **Known third-party messages** (harmless): PyOpenGL's `No OpenGL_accelerate
+  module loaded` line on first render; DeprecationWarnings (hidden by
+  default) from pyglet's use of `ctypes._pointer_type_cache` on Windows with
+  Python 3.14+ and from PyOpenGL's use of `ctypes.__version__` on Python
+  3.15; a `torch.jit` warning emitted by one of ComfyUI's own dependencies.
+  smplx's "only 10 shape coefficients" message, printed when loading SMPL-H,
+  is captured by the pack (10 betas is what it uses).
+- **Memory**: `part_masks` is 24 × H × W float32, i.e. 96 bytes per pixel
+  (96 MB at 1024×1024, 1.5 GB at 4096×4096); turn `compute_part_masks` off
+  when you do not need it.
 - No custom socket types: every input and output is a standard ComfyUI
   `IMAGE`, `MASK`, `INT`, `FLOAT`, `BOOLEAN` or combo.
 
@@ -364,9 +421,19 @@ OpenGL context (any other rendering error fails them; set
 they are installed (for example with `SMPL_AVATAR_MODEL_DIR=...`) and skip
 otherwise.
 
+### Publishing to the Comfy Registry
+
+`pyproject.toml` already carries the `[project]` and `[tool.comfy]` metadata
+(node id `smpl-avatar`, immutable once published). Before the first
+`comfy node publish`, set `PublisherId` in `[tool.comfy]` to the publisher
+created on https://registry.comfy.org and make sure `[project.urls]` points to
+the public repository; bump `version` for every release.
+
 ## Licensing
 
 - **This repository's code**: MIT, © 2026 Corentin Euvrard ([LICENSE](LICENSE)).
+  `LICENSE` is the plain MIT text; what it does and does not cover is
+  spelled out in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **Vendored pyrender** (`smpl_avatar/_vendor/pyrender`): MIT, © 2019 Matthew
   Matl; see its `LICENSE` file and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **smplx** (runtime dependency, installed from PyPI): Max Planck

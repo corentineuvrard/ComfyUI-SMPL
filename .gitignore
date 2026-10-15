@@ -16,6 +16,8 @@
 *.safetensors
 *.zip
 smpl_vert_segmentation*.json
+# Staging files of atomic writes (regressor, segmentation, converted models).
+*.tmp
 
 # --- Python -------------------------------------------------------------------
 __pycache__/
