@@ -3,7 +3,7 @@
 The node pack fits the regressor automatically on first use; this script does
 the same thing explicitly, for every installed model (or the ones selected),
 and prints the fit errors. The procedure is fully synthetic and deterministic
-(see smpl_avatar/regressor.py and the README section 'Shape regressor').
+(see smpl_avatar/regressor.py and docs/TECHNICAL.md, 'Shape regressor').
 
 Usage::
 

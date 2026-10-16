@@ -61,7 +61,7 @@ def decide(environ: Mapping[str, str], platform: str) -> Tuple[Optional[str], st
     """
     current = environ.get(ENV_VAR)
     if current:
-        return None, f"{ENV_VAR}={current!r} already set; respecting it"
+        return None, f"{ENV_VAR}={current!r} already set; kept in this process (the render worker picks its own backend)"
     if platform.startswith("linux"):
         if environ.get("DISPLAY") or environ.get("WAYLAND_DISPLAY"):
             return None, "Linux with a display server; using the default pyglet backend"

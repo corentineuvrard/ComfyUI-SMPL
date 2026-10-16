@@ -195,8 +195,11 @@ def test_arm_angle_lowers_the_wrists(gl_available, model_type, gender):
 
 @needs_models
 @each_model
-def test_generate_node_outputs(pack, gl_available, model_type, gender):
+def test_generate_node_outputs(pack, gl_available, tmp_path, monkeypatch, model_type, gender):
     torch = pytest.importorskip("torch")
+    # The node uses the pack's default regressor path: keep the fit out of the real models/ folder.
+    monkeypatch.setattr(pack.smpl_avatar.paths, "REGRESSOR_PATH", tmp_path / "reg.npz")
+    pack.smpl_avatar.pipeline._regressors.clear()
     node = pack.NODE_CLASS_MAPPINGS["SMPLAvatarGenerate"]()
     image, mask, depth, parts = node.generate(model_type, gender, 180.0, 80.0, 128, 192, arm_angle=40.0)
     assert image.shape == depth.shape == (1, 192, 128, 3)
@@ -217,7 +220,7 @@ def _wrapped(inner: BaseException) -> BaseException:
         except BaseException as original:
             raise ImportError(
                 "The renderer could not be loaded (...). Install the node pack requirements; "
-                "on headless Linux see the README section 'OpenGL platform and headless Linux'."
+                "on headless Linux see docs/TECHNICAL.md, 'OpenGL platform and headless Linux'."
             ) from original
     except ImportError as exc:
         return exc

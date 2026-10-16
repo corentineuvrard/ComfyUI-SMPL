@@ -28,6 +28,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -78,7 +79,7 @@ def import_pyrender():
     except ImportError as exc:
         raise ImportError(
             f"The renderer could not be loaded ({exc}). Install the node pack requirements "
-            "(pip install -r requirements.txt); on headless Linux see the README section "
+            "(pip install -r requirements.txt); on headless Linux see docs/TECHNICAL.md, "
             "'OpenGL platform and headless Linux'."
         ) from exc
     return pyrender
@@ -528,6 +529,7 @@ class RenderWorker:
     def _start(self) -> None:
         env, reason = gl_platform.worker_environment(os.environ, sys.platform, set(sys.modules))
         LOGGER.info("%s Starting the render worker process (OpenGL: %s)", LOG_PREFIX, reason)
+        self._started_at = time.perf_counter()
         kwargs = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -572,6 +574,8 @@ class RenderWorker:
                             "(something printed during the interpreter start-up?)"
                         )
                     self._handshaken = True
+                    LOGGER.info("%s render worker ready (%.1f s after its start)", LOG_PREFIX,
+                                time.perf_counter() - self._started_at)
                 reply = _unpack(_read_message(process.stdout))
             except (OSError, EOFError, ValueError) as exc:
                 self._process = None

@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import threading
+import time
 import urllib.request
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence, Tuple
@@ -152,6 +153,7 @@ def download(destination: Path = paths.SEGMENTATION_PATH, url: str = SEGMENTATIO
         "[SMPL Avatar] Downloading the SMPL part segmentation published by Meshcapade GmbH "
         "(%s). See THIRD_PARTY_NOTICES.md.", url,
     )
+    started = time.perf_counter()
     with urllib.request.urlopen(url, timeout=timeout) as response:
         payload = response.read(MAX_DOWNLOAD_BYTES + 1)
     if len(payload) > MAX_DOWNLOAD_BYTES:
@@ -177,6 +179,8 @@ def download(destination: Path = paths.SEGMENTATION_PATH, url: str = SEGMENTATIO
     except OSError:
         tmp.unlink(missing_ok=True)
         raise
+    LOGGER.info("[SMPL Avatar] Part segmentation saved to %s (%d bytes, %.1f s)",
+                destination, len(payload), time.perf_counter() - started)
     return destination
 
 
