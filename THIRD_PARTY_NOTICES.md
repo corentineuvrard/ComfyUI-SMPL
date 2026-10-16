@@ -47,8 +47,11 @@ separately, under their own terms, which are **not** MIT and in several cases
 
 `docs/demo_outputs.png` and `docs/demo_part_unions.png` are 2D renders
 (shaded image, silhouette, 8-bit depth, part labels; 320 × 480 pixels per
-tile) produced by this node pack from the official SMPL and SMPL+H models.
-They contain no model data (no mesh, vertices, blend shapes or weights). They
+tile) produced by this node pack from the official SMPL and SMPL+H models;
+`docs/workflow_maps.png` and `docs/workflow_part_masks.png` are screenshots
+of the example workflows running in ComfyUI and contain renders of the same
+kind (rendered at 512 × 768, shown scaled down). They contain no model data
+(no mesh, vertices, blend shapes or weights). They
 are shown for illustration and education only, are **not** covered by this
 repository's MIT license, and remain subject to the SMPL-Model and MANO
 licenses of the models they were rendered from. SMPL and SMPL+H body models

@@ -75,6 +75,34 @@ avatars gives `N` output masks.
 The order is the SMPL joint order: part *i* is the region driven by joint *i*.
 "Left" is the body's left.
 
+## Example workflows
+
+Both workflows are in [`example_workflows/`](example_workflows) and in
+ComfyUI's template browser once the pack is installed. Masks are displayed
+with ComfyUI's built-in *Preview Mask* node, so no other node pack is needed.
+
+### Render, silhouette, depth and a part mask
+
+[`smpl_avatar_maps.json`](example_workflows/smpl_avatar_maps.json): one
+*Generate SMPL Avatar* node feeds *Preview Image* / *Preview Mask* nodes with
+the render, the silhouette and the depth map, and a *Union SMPL Part Masks*
+node with the `upper body` preset.
+
+![Workflow: Generate SMPL Avatar wired to previews of the render, the silhouette mask, the depth map and an upper-body part mask](docs/workflow_maps.png)
+
+### Part masks from a preset or from the toggles
+
+[`smpl_avatar_part_masks.json`](example_workflows/smpl_avatar_part_masks.json):
+an SMPL-H body seen from a three-quarter view (`yaw` = 30) and two *Union SMPL
+Part Masks* nodes: one uses the `hands` preset, the other selects `head` and
+`neck` with the toggles and dilates the result by 8 pixels (`grow_px`).
+
+![Workflow: an SMPL-H avatar with two Union SMPL Part Masks nodes, one with the hands preset and one with the head and neck toggles](docs/workflow_part_masks.png)
+
+*The screenshots contain renders of the SMPL / SMPL+H models,
+© Max-Planck-Gesellschaft, shown for illustration under their non-commercial
+license; see [docs/README.md](docs/README.md).*
+
 ## Installation
 
 1. Clone this repository into `ComfyUI/custom_nodes/` (or install it with
@@ -109,9 +137,8 @@ ComfyUI itself requires** (`>=3.1.8`) and break ComfyUI's built-in GLSL node.
 The copy works with current PyOpenGL, NumPy 2 and recent Python versions; its
 changes are listed in `smpl_avatar/_vendor/README.md` and the exact diff is in
 `smpl_avatar/_vendor/pyrender.patch`.
-An example workflow (render, silhouette, depth and an upper-body part mask) is
-available from ComfyUI's template browser, or in
-[`example_workflows/smpl_avatar_maps.json`](example_workflows/smpl_avatar_maps.json).
+The two [example workflows](#example-workflows) are also listed in ComfyUI's
+template browser once the pack is installed.
 
 ## Body model files
 
