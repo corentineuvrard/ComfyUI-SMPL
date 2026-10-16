@@ -147,7 +147,8 @@ def dumps_with_fake_chumpy(data: dict, chumpy_keys=("shapedirs", "v_template", "
     fake_scipy.sparse = fake_sparse
     fakes = {"chumpy": fake_pkg, "chumpy.ch": fake_mod,
              "scipy": fake_scipy, "scipy.sparse": fake_sparse, "scipy.sparse.csc": fake_csc}
-    saved = {name: sys.modules.get(name) for name in fakes}
+    missing = object()
+    saved = {name: sys.modules.get(name, missing) for name in fakes}  # None is a valid entry
     sys.modules.update(fakes)
     try:
         wrapped = {k: (cls(v) if k in chumpy_keys else csc(v) if k in sparse_keys else v)
@@ -155,7 +156,7 @@ def dumps_with_fake_chumpy(data: dict, chumpy_keys=("shapedirs", "v_template", "
         return pickle.dumps(wrapped, protocol=2)
     finally:
         for name, module in saved.items():
-            if module is None:
+            if module is missing:
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module

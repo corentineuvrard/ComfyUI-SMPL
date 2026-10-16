@@ -54,6 +54,9 @@ def main(argv=None) -> int:
             except FileNotFoundError:
                 print(f"skip {model_type} {gender}: model file not installed")
                 continue
+            except body_model.BodyModelFormatError as exc:
+                print(f"skip {model_type} {gender}: {exc}")
+                continue
             start = time.perf_counter()
             reg = regressor.train(
                 body.v_template, body.shapedirs, body.faces, gender=gender,
@@ -78,7 +81,7 @@ def main(argv=None) -> int:
             print("  held-out R^2 per beta: " + " ".join(f"{x:.2f}" for x in r2))
 
     if not reports:
-        print("No body model installed; nothing to do.")
+        print("No usable body model installed; nothing to do.")
         return 1
     regressor.save_regressors(args.output, stored)
     print(f"\nSaved {len(reports)} regressor(s) to {args.output}")

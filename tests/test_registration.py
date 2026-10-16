@@ -89,6 +89,15 @@ def test_union_node_execution(pack):
         node.union(torch.zeros(1, 9, 9), preset="head")
 
 
+def test_union_warns_when_every_part_mask_is_empty(pack, caplog):
+    torch = pytest.importorskip("torch")
+    union = pack.NODE_CLASS_MAPPINGS["SMPLAvatarPartMaskUnion"]()
+    with caplog.at_level("WARNING"):
+        (mask,) = union.union(torch.zeros(24, 4, 4), preset="full body")
+    assert float(mask.sum()) == 0
+    assert "compute_part_masks" in caplog.text
+
+
 def test_importing_the_pack_is_lightweight():
     """Heavy or optional dependencies must only be imported when a node runs."""
     code = textwrap.dedent(f"""

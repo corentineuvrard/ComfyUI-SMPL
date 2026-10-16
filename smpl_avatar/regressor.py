@@ -98,9 +98,13 @@ def save_regressors(path, regressors: Mapping[str, LinearBetaRegressor]) -> None
         arrays[f"{key}__meta"] = np.array(json.dumps(dict(reg.meta), sort_keys=True))
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "wb") as handle:
-        np.savez(handle, **arrays)
-    tmp.replace(path)
+    try:
+        with open(tmp, "wb") as handle:
+            np.savez(handle, **arrays)
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def load_regressors(path) -> Dict[str, LinearBetaRegressor]:

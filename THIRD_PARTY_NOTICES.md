@@ -50,7 +50,10 @@ separately, under their own terms, which are **not** MIT and in several cases
 tile) produced by this node pack from the official SMPL and SMPL+H models;
 `docs/workflow_maps.png` and `docs/workflow_part_masks.png` are screenshots
 of the example workflows running in ComfyUI and contain renders of the same
-kind (rendered at 512 × 768, shown scaled down). They contain no model data
+kind (rendered at 512 × 768, shown scaled down), as do the template
+thumbnails `example_workflows/smpl_avatar_maps.jpg` and
+`example_workflows/smpl_avatar_part_masks.jpg` cropped from them. The images
+contain no model data
 (no mesh, vertices, blend shapes or weights). They
 are shown for illustration and education only, are **not** covered by this
 repository's MIT license, and remain subject to the SMPL-Model and MANO

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 
 from .smpl_avatar import body_model, masks, pipeline, render
 from .smpl_avatar.segmentation import NUM_PARTS, PART_DESCRIPTIONS, PART_NAMES
 
 CATEGORY = "SMPL Avatar"
+LOGGER = logging.getLogger(__name__)
 
 
 def _to_tensor(array: np.ndarray):
@@ -94,7 +97,10 @@ class SMPLAvatarGenerate:
                 }),
                 "view_height_m": ("FLOAT", {
                     "default": 2.2, "min": 0.5, "max": 5.0, "step": 0.05,
-                    "tooltip": "Height of the orthographic view in metres (framing = fixed only).",
+                    "tooltip": "Height of the orthographic view in metres (framing = fixed only). "
+                               "The view is view_height_m x width/height metres wide (1.47 m at "
+                               "512x768), so a T-pose may not fit: a warning is logged when the "
+                               "body is cut.",
                 }),
                 "background": (list(render.BACKGROUNDS), {"default": "black"}),
                 "soft_mask": ("BOOLEAN", {
@@ -183,6 +189,12 @@ class SMPLAvatarPartMaskUnion:
         names.update(name for name in PART_NAMES if toggles.get(name))
         array = part_masks.detach().cpu().numpy() if hasattr(part_masks, "detach") else np.asarray(part_masks)
         result = masks.union_part_masks(array, masks.part_indices(names))
+        if not array.any():
+            LOGGER.warning(
+                "[SMPL Avatar] Union SMPL Part Masks: every input part mask is empty, so the "
+                "output is empty too: usually 'compute_part_masks' is off on Generate SMPL "
+                "Avatar, or the body lies outside the view (framing = fixed)."
+            )
         return (grow_mask(_to_tensor(result), grow_px),)
 
 

@@ -118,6 +118,23 @@ class _ThreadStdoutCapture:
         return getattr(self._target, name)
 
 
+EXPECTED_JOINTS = {"SMPL": 24, "SMPL-H": 52}
+
+
+def _import_failed_in(exc: ImportError, packages) -> bool:
+    """True when ``exc`` names one of ``packages`` or was raised inside one of them."""
+    root = (getattr(exc, "name", None) or "").partition(".")[0]
+    if root in packages:
+        return True
+    tb = exc.__traceback__
+    while tb is not None:
+        filename = tb.tb_frame.f_code.co_filename.replace("\\", "/")
+        if any(f"/{package}/" in filename for package in packages):
+            return True
+        tb = tb.tb_next
+    return False
+
+
 def _build(model_type: str, gender: str, path: Path) -> BodyModel:
     torch, smplx = _import_smplx()
     common = dict(model_path=str(path), gender=gender, num_betas=NUM_BETAS, batch_size=1)
@@ -135,21 +152,29 @@ def _build(model_type: str, gender: str, path: Path) -> BodyModel:
                 )
             else:
                 module = smplx.SMPLH(**common, ext="pkl", use_pca=False, flat_hand_mean=False)
-    except ModuleNotFoundError as exc:
-        if "chumpy" in str(exc):
+    except ImportError as exc:
+        if _import_failed_in(exc, ("chumpy", "scipy")):
+            # Unpickling an official file imports chumpy (and scipy for its sparse
+            # matrices): either is missing, or installed but broken on current NumPy.
             raise BodyModelFormatError(
-                f"{path} still contains chumpy objects, which smplx cannot load without the "
-                "unmaintained chumpy package. Convert it first with "
+                f"{path} still contains chumpy / scipy objects, which smplx could not load "
+                f"({type(exc).__name__}: {exc}). Convert the file first with "
                 "'python scripts/prepare_models.py' (see README, 'Body model files')."
             ) from exc
-        raise
+        raise BodyModelFormatError(
+            f"{path} references a module that cannot be imported here ({type(exc).__name__}: "
+            f"{exc}): it was written by another Python environment, or is not a model file. "
+            "Prepare it again from the official download with 'python scripts/prepare_models.py' "
+            "(see README, 'Body model files')."
+        ) from exc
     except (AttributeError, KeyError, TypeError, ValueError, EOFError, pickle.UnpicklingError,
             zipfile.BadZipFile) as exc:
         if model_type == "SMPL-H" and "hands_" in str(exc):
             raise BodyModelFormatError(
-                f"{path} has no MANO hand parameters. SMPL-H files from the MANO website must be "
-                "merged with MANO_LEFT/MANO_RIGHT first; 'python scripts/prepare_models.py' does "
-                "that merge (see README, 'Body model files')."
+                f"{path} has no MANO hand parameters: either it is an SMPL-H file from the MANO "
+                "website that was not merged with MANO_LEFT/MANO_RIGHT ('python "
+                "scripts/prepare_models.py' does that merge), or it is a body-only SMPL file "
+                "placed in the smplh folder (see README, 'Body model files')."
             ) from exc
         raise BodyModelFormatError(
             f"{path} could not be read as a {model_type} model file ({type(exc).__name__}: {exc}). "
@@ -159,6 +184,17 @@ def _build(model_type: str, gender: str, path: Path) -> BodyModel:
         ) from exc
     if captured.captured.getvalue().strip():
         LOGGER.debug("[SMPL Avatar] smplx said while loading %s: %s", path.name, captured.captured.getvalue().strip())
+    # smplx builds an SMPL module from an SMPL-H file without complaint and only
+    # fails later, inside the forward pass: refuse the file before it is cached.
+    joints = int(module.J_regressor.shape[0])
+    if joints != EXPECTED_JOINTS[model_type]:
+        looks_like = [t for t, n in EXPECTED_JOINTS.items() if n == joints]
+        hint = f" (it looks like a {looks_like[0]} file)" if looks_like else ""
+        raise BodyModelFormatError(
+            f"{path} has {joints} joints, but a {model_type} model has "
+            f"{EXPECTED_JOINTS[model_type]}{hint}: the file is in the wrong folder or was "
+            "renamed (see README, 'Body model files')."
+        )
     module.eval()
     return BodyModel(
         model_type=model_type,

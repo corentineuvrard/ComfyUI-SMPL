@@ -2,7 +2,7 @@
 
 The official SMPL and MANO / SMPL-H downloads are Python 2 pickles containing
 ``chumpy`` arrays. smplx cannot load them unless chumpy is installed, and
-chumpy no longer works with current Python / NumPy releases. This script:
+chumpy's PyPI release no longer works with current NumPy releases. This script:
 
 * reads the official files, either extracted or directly inside the official
   zip archives, without importing chumpy or SciPy: chumpy objects and sparse
@@ -18,7 +18,8 @@ chumpy no longer works with current Python / NumPy releases. This script:
       <output>/smpl/SMPL_FEMALE.pkl   <output>/smplh/SMPLH_FEMALE.pkl
 
 Only plain chumpy ``Ch`` arrays are supported, which is what the official
-files contain; anything else stops the conversion with an explicit error.
+files contain; a file holding anything else is reported and skipped, like a
+corrupt or truncated one, and the other files are still converted.
 The gender-neutral SMPL model is reported and skipped: this node pack only
 offers the male and female models.
 
@@ -60,6 +61,8 @@ OUTPUT_NAMES = {
     ("SMPL-H", "male"): ("smplh", "SMPLH_MALE.pkl"),
     ("SMPL-H", "female"): ("smplh", "SMPLH_FEMALE.pkl"),
 }
+
+MANO_KEYS = {"hands_components", "hands_mean"}
 
 EXPECTED = {
     "SMPL": {"v_template": (6890, 3), "J_regressor": (24, 6890), "weights": (6890, 24), "f": (13776, 3)},
@@ -226,6 +229,8 @@ def load_first(candidates: List[Candidate]) -> Optional[Tuple[str, dict]]:
             return display, load_official(read(), display)
         except (ModelFileError, OSError, KeyError, zipfile.BadZipFile) as exc:
             print(f"error  {exc}")
+        except ValueError as exc:  # unsupported chumpy objects or sparse matrices
+            print(f"error  {display}: {exc}")
     return None
 
 
@@ -274,10 +279,14 @@ def main(argv: Optional[list] = None) -> int:
         print("No official SMPL / SMPL-H / MANO files found under", args.source)
         return 1
 
-    written = 0
+    written = existing = skipped = 0
     mano = {}
     if ("MANO", "left") in found and ("MANO", "right") in found:
         loaded = {side: load_first(found[("MANO", side)]) for side in ("left", "right")}
+        for side, item in loaded.items():
+            if item is not None and not MANO_KEYS <= set(item[1]):
+                print(f"error  {item[0]}: not a MANO file (missing {sorted(MANO_KEYS - set(item[1]))}); skipped")
+                loaded[side] = None
         if all(loaded.values()):
             mano = {side: loaded[side][1] for side in ("left", "right")}
 
@@ -288,29 +297,41 @@ def main(argv: Optional[list] = None) -> int:
         destination = args.output / subdir / name
         if destination.exists() and not args.force:
             print(f"skip   {destination} (exists; use --force to overwrite)")
+            existing += 1
             continue
         loaded = load_first(found[key])
         if loaded is None:
             print(f"skip   {destination}: no readable {model_type} {key[1]} file")
+            skipped += 1
             continue
         display, data = loaded
-        if model_type == "SMPL-H":
-            if "hands_componentsl" not in data:
+        try:
+            if model_type == "SMPL-H" and "hands_componentsl" not in data:
                 if not mano:
                     print(f"skip   {destination}: MANO_LEFT.pkl and MANO_RIGHT.pkl are needed for SMPL-H")
+                    skipped += 1
                     continue
                 data = merge_mano(data, mano["left"], mano["right"])
-        validate(model_type, data)
+            validate(model_type, data)
+        except ValueError as exc:  # wrong shapes or missing arrays
+            print(f"error  {display}: {exc}; skipped")
+            skipped += 1
+            continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         tmp = destination.with_name(destination.name + ".tmp")
-        with open(tmp, "wb") as handle:
-            pickle.dump(data, handle, protocol=4)
-        tmp.replace(destination)
+        try:
+            with open(tmp, "wb") as handle:
+                pickle.dump(data, handle, protocol=4)
+            tmp.replace(destination)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         written += 1
         print(f"wrote  {destination}")
 
-    print(f"{written} model file(s) written.")
-    return 0 if written else 1
+    print(f"{written} model file(s) written, {existing} already present, "
+          f"{skipped} skipped (unreadable, invalid or incomplete; see the lines above).")
+    return 0 if written or existing else 1
 
 
 if __name__ == "__main__":

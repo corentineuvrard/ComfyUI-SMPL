@@ -119,6 +119,37 @@ def extrapolation_warning(
     return "the linear height/weight regressor does not match this request exactly: " + "; ".join(deviates)
 
 
+def clipping_warning(vertices: np.ndarray, view) -> Optional[str]:
+    """Describe how the body overflows the orthographic ``view``, or ``None`` if it fits.
+
+    ``fit`` framing always fits. ``fixed`` framing keeps the view
+    ``view_height_m`` metres tall and ``view_height_m * width / height`` metres
+    wide, whatever the body does.
+    """
+    v = np.asarray(vertices, dtype=np.float64)
+    (xmin, ymin), (xmax, ymax) = v[:, :2].min(axis=0), v[:, :2].max(axis=0)
+    left, right = view.center_x - view.xmag, view.center_x + view.xmag
+    bottom, top = view.center_y - view.ymag, view.center_y + view.ymag
+    tolerance = 1e-6
+    cuts = []
+    if xmin < left - tolerance:
+        cuts.append(f"{left - xmin:.2f} m on the left")
+    if xmax > right + tolerance:
+        cuts.append(f"{xmax - right:.2f} m on the right")
+    if ymax > top + tolerance:
+        cuts.append(f"{ymax - top:.2f} m at the top")
+    if ymin < bottom - tolerance:
+        cuts.append(f"{bottom - ymin:.2f} m at the bottom")
+    if not cuts:
+        return None
+    return (
+        f"the body ({xmax - xmin:.2f} m wide, {ymax - ymin:.2f} m tall) does not fit the "
+        f"{2 * view.xmag:.2f} x {2 * view.ymag:.2f} m view and is cut by " + ", ".join(cuts)
+        + ". With framing = fixed the view is view_height_m x width/height metres wide: "
+        "increase view_height_m, use a wider image, or lower the arms with arm_angle."
+    )
+
+
 @dataclass
 class Avatar:
     render: RenderResult
@@ -146,6 +177,15 @@ def generate(
     part_masks: bool = True,
     regressor_path: Optional[Path] = None,
 ) -> Avatar:
+    # Widget ranges are checked by ComfyUI; values from linked inputs are not.
+    for name, value in (("height_cm", height_cm), ("weight_kg", weight_kg), ("arm_angle", arm_angle),
+                        ("yaw", yaw), ("padding", padding), ("view_height_m", view_height_m)):
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be a finite number, got {value!r}")
+    if padding < 0:
+        raise ValueError(f"padding must be >= 0, got {padding!r}")
+    if view_height_m <= 0:
+        raise ValueError(f"view_height_m must be positive, got {view_height_m!r}")
     body = body_model.load(model_type, gender)
     reg = regressor_for(body, regressor_path or paths.REGRESSOR_PATH)
     betas = reg.predict(height_cm, weight_kg)
@@ -161,6 +201,9 @@ def generate(
     vertices = rotate_y(vertices, yaw)
     joints = rotate_y(joints, yaw)
     view = compute_view(vertices, width, height, framing, padding, view_height_m)
+    clipped = clipping_warning(vertices, view)
+    if clipped:
+        LOGGER.warning("[SMPL Avatar] %s %s: %s", model_type, gender, clipped)
     labels = face_labels_for(body) if part_masks else None
     result = render_mesh(
         vertices, body.faces, width, height, view,

@@ -11,7 +11,10 @@ and distributed under the non-commercial SMPL-Model / MANO licenses
 (https://smpl.is.tue.mpg.de, https://mano.is.tue.mpg.de).
 `workflow_maps.png` and `workflow_part_masks.png` are screenshots of the two
 workflows of `example_workflows/` after running them in ComfyUI; the previews
-they show are renders of the same kind, and the same terms apply to them.
+they show are renders of the same kind, and the same terms apply to them, as
+they do to the template thumbnails `example_workflows/smpl_avatar_maps.jpg`
+and `example_workflows/smpl_avatar_part_masks.jpg`, which are cropped from
+these screenshots.
 
 - They are 2D results (shaded render, silhouette, 8-bit depth, part labels)
   at 320 × 480 pixels per tile; the previews in the workflow screenshots were

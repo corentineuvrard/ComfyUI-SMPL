@@ -230,9 +230,11 @@ def model_dir(tmp_path, monkeypatch):
     body_model.clear_cache()
 
 
-def test_unconverted_chumpy_file_gives_format_error(model_dir):
+def test_unconverted_chumpy_file_gives_format_error(model_dir, monkeypatch):
     from smpl_avatar import body_model
+    from helpers import block_import
 
+    block_import(monkeypatch, "chumpy")  # same outcome whether or not chumpy is installed
     (model_dir / "smpl").mkdir()
     (model_dir / "smpl" / "SMPL_MALE.pkl").write_bytes(dumps_with_fake_chumpy(model_dict("SMPL")))
     with pytest.raises(body_model.BodyModelFormatError, match="chumpy"):
@@ -247,6 +249,92 @@ def test_smplh_without_mano_gives_format_error(model_dir):
         pickle.dump(model_dict("SMPL-H"), handle)
     with pytest.raises(body_model.BodyModelFormatError, match="MANO.*prepare_models"):
         body_model.load("SMPL-H", "female")
+
+
+class _BrokenPackage:
+    """Meta path finder for a package that is installed but fails to import
+    (chumpy on NumPy >= 1.24: "cannot import name 'bool' from 'numpy'")."""
+
+    def __init__(self, name: str, error: str):
+        self.name, self.error = name, error
+
+    def find_spec(self, fullname, path=None, target=None):
+        import importlib.util
+
+        if fullname == self.name or fullname.startswith(self.name + "."):
+            return importlib.util.spec_from_loader(fullname, self)
+        return None
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        # Raised from a frame that belongs to the package, as the real failure is.
+        code = compile(f"raise ImportError({self.error!r}, name='numpy')",
+                       f"site-packages/{self.name}/__init__.py", "exec")
+        exec(code, module.__dict__)
+
+
+def test_broken_chumpy_install_gives_format_error(model_dir, monkeypatch):
+    import sys
+
+    from smpl_avatar import body_model
+
+    for loaded in [m for m in sys.modules if m == "chumpy" or m.startswith("chumpy.")]:
+        monkeypatch.delitem(sys.modules, loaded)
+    broken = _BrokenPackage("chumpy", "cannot import name 'bool' from 'numpy'")
+    monkeypatch.setattr(sys, "meta_path", [broken] + sys.meta_path)
+    (model_dir / "smpl").mkdir()
+    (model_dir / "smpl" / "SMPL_MALE.pkl").write_bytes(dumps_with_fake_chumpy(model_dict("SMPL")))
+    with pytest.raises(body_model.BodyModelFormatError, match="chumpy.*prepare_models") as info:
+        body_model.load("SMPL", "male")
+    assert "cannot import name 'bool'" in str(info.value)
+    assert ("SMPL", "male") not in body_model.cached_keys()
+
+
+def test_file_from_another_environment_is_not_blamed_on_chumpy(model_dir, monkeypatch):
+    """A pickle that references a module missing here (not chumpy / scipy) gets its own advice."""
+    import sys
+    import types
+
+    from smpl_avatar import body_model
+
+    fake = types.ModuleType("no_such_pkg")
+    fake.Thing = type("Thing", (), {"__module__": "no_such_pkg"})
+    monkeypatch.setitem(sys.modules, "no_such_pkg", fake)
+    data = model_dict("SMPL")
+    data["extra"] = fake.Thing()
+    payload = pickle.dumps(data, protocol=4)
+    monkeypatch.delitem(sys.modules, "no_such_pkg")
+    (model_dir / "smpl").mkdir()
+    (model_dir / "smpl" / "SMPL_MALE.pkl").write_bytes(payload)
+    with pytest.raises(body_model.BodyModelFormatError, match="no_such_pkg.*another Python environment") as info:
+        body_model.load("SMPL", "male")
+    assert "chumpy / scipy objects" not in str(info.value)
+
+
+def test_sparse_matrices_without_scipy_give_format_error(model_dir, monkeypatch):
+    from smpl_avatar import body_model
+    from helpers import block_import
+
+    block_import(monkeypatch, "scipy")
+    (model_dir / "smpl").mkdir()
+    (model_dir / "smpl" / "SMPL_MALE.pkl").write_bytes(
+        dumps_with_fake_chumpy(model_dict("SMPL"), chumpy_keys=(), sparse_keys=("J_regressor",)))
+    with pytest.raises(body_model.BodyModelFormatError, match="scipy.*prepare_models"):
+        body_model.load("SMPL", "male")
+
+
+def test_model_of_the_other_type_is_rejected_before_caching(model_dir):
+    """An SMPL-H file in the smpl folder loads in smplx and would only fail at render time."""
+    from smpl_avatar import body_model
+
+    (model_dir / "smpl").mkdir()
+    with open(model_dir / "smpl" / "SMPL_MALE.pkl", "wb") as handle:
+        pickle.dump(model_dict("SMPL-H"), handle)
+    with pytest.raises(body_model.BodyModelFormatError, match="52 joints.*SMPL-H file"):
+        body_model.load("SMPL", "male")
+    assert ("SMPL", "male") not in body_model.cached_keys()
 
 
 @pytest.mark.parametrize("payload", [b"", b"\x00" * 100, b"<html>login</html>", pickle.dumps([1, 2, 3])])
@@ -292,6 +380,18 @@ def test_regressor_file_never_unpickles(tmp_path):
     assert not marker.exists()
 
 
+def test_failed_regressor_write_leaves_no_tmp_file(tmp_path, monkeypatch):
+    reg = regressor.LinearBetaRegressor(weights=np.zeros((2, 10)), bias=np.zeros(10), meta={})
+
+    def disk_full(handle, **arrays):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(regressor.np, "savez", disk_full)
+    with pytest.raises(OSError, match="disk full"):
+        regressor.save_regressors(tmp_path / "reg.npz", {"smpl_male": reg})
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_save_regressors_is_byte_deterministic(tmp_path):
     rng = np.random.default_rng(0)
     a = regressor.LinearBetaRegressor(rng.normal(size=(2, 10)), rng.normal(size=10), {"k": 1})
@@ -311,6 +411,18 @@ def test_corrupt_segmentation_file_is_reported_with_path(tmp_path, payload):
     with pytest.raises(segmentation.SegmentationUnavailableError, match="unreadable") as info:
         segmentation.load_membership(path)
     assert str(path) in str(info.value)
+
+
+def test_unpinned_segmentation_file_logs_a_warning(tmp_path, caplog):
+    from synthetic_models import write_segmentation
+
+    path = tmp_path / "seg.json"
+    write_segmentation(path)
+    with caplog.at_level("WARNING", logger=segmentation.LOGGER.name):
+        membership = segmentation.load_membership(path)
+    assert membership.shape == (6890, 24)
+    assert "not the pinned SMPL part segmentation" in caplog.text
+    assert segmentation.SEGMENTATION_SHA256 in caplog.text
 
 
 def test_oversized_download_is_rejected(tmp_path, monkeypatch):
@@ -438,6 +550,29 @@ def test_download_script_fails_cleanly_offline(tmp_path, monkeypatch):
     assert module.main(["--output", str(tmp_path / "seg.json")]) == 1
 
 
+def test_download_script_checks_an_existing_file(tmp_path, monkeypatch, capsys):
+    import importlib.util
+
+    from synthetic_models import write_segmentation
+
+    spec = importlib.util.spec_from_file_location("download_segmentation_rb2", REPO / "scripts" / "download_segmentation.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    path = tmp_path / "seg.json"
+    write_segmentation(path)  # well formed, but not the pinned file
+    assert module.main(["--output", str(path)]) == 1
+    out = capsys.readouterr().out
+    assert "not the pinned file" in out and "--force" in out
+
+    def offline(url, timeout):
+        raise OSError("name resolution failed")
+
+    monkeypatch.setattr(segmentation.urllib.request, "urlopen", offline)
+    assert module.main(["--output", str(path), "--force"]) == 1  # --force tries to download
+    assert "name resolution failed" in capsys.readouterr().out
+    assert path.is_file()  # the old file is untouched by a failed download
+
+
 def test_train_script_tolerates_unreadable_output(tmp_path, monkeypatch, capsys):
     """An existing --output in another format is replaced with a warning, like the node does."""
     import importlib.util
@@ -458,6 +593,38 @@ def test_train_script_tolerates_unreadable_output(tmp_path, monkeypatch, capsys)
 
 
 # ------------------------------------------------------------- extrapolation
+
+
+@pytest.mark.parametrize("override", [
+    {"height_cm": float("nan")}, {"weight_kg": float("inf")}, {"padding": -0.1}, {"padding": float("nan")},
+    {"arm_angle": float("inf")}, {"yaw": float("nan")}, {"view_height_m": float("nan")}, {"view_height_m": 0.0},
+])
+def test_generate_rejects_bad_inputs_before_loading_a_model(monkeypatch, override):
+    from smpl_avatar import pipeline
+
+    monkeypatch.setattr(pipeline.body_model, "load", lambda *a, **k: pytest.fail("a model was loaded"))
+    kwargs = dict(model_type="SMPL", gender="male", height_cm=175.0, weight_kg=70.0, width=64, height=96)
+    kwargs.update(override)
+    with pytest.raises(ValueError, match=next(iter(override))):
+        pipeline.generate(**kwargs)
+
+
+def test_fixed_framing_clipping_is_reported():
+    from smpl_avatar import pipeline
+    from smpl_avatar.render import compute_view
+    from helpers import box_mesh
+
+    vertices, _ = box_mesh(size=(2.0, 1.8, 0.3))  # a 2 m wide, 1.8 m tall body
+    assert pipeline.clipping_warning(vertices, compute_view(vertices, 512, 768)) is None  # fit
+    wide = compute_view(vertices, 512, 768, framing="fixed", view_height_m=4.0)  # 2.67 m wide
+    assert pipeline.clipping_warning(vertices, wide) is None
+    narrow = compute_view(vertices, 512, 768, framing="fixed", view_height_m=2.2)  # 1.47 m wide
+    message = pipeline.clipping_warning(vertices, narrow)
+    assert "does not fit the 1.47 x 2.20 m view" in message
+    assert "0.27 m on the left" in message and "0.27 m on the right" in message
+    assert "view_height_m" in message and "arm_angle" in message
+    short = compute_view(vertices, 512, 768, framing="fixed", view_height_m=1.0)
+    assert "at the top" in pipeline.clipping_warning(vertices, short)
 
 
 def test_extrapolation_warning_logic():

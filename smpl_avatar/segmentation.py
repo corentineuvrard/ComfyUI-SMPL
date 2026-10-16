@@ -213,12 +213,22 @@ def load_membership(path: Optional[Path] = None) -> np.ndarray:
     with _cache_lock:
         if path not in _membership_cache:
             try:
-                with open(path, "r", encoding="utf-8") as handle:
-                    _membership_cache[path] = parse_segmentation(json.load(handle))
+                payload = path.read_bytes()
+                membership = parse_segmentation(json.loads(payload.decode("utf-8")))
             except (ValueError, OSError) as exc:  # JSON / encoding / content errors
                 raise SegmentationUnavailableError(
                     f"the SMPL part segmentation file {path} is unreadable ({type(exc).__name__}: "
                     f"{exc}). Delete it so that it is downloaded again, or replace it with the "
                     f"file from {SEGMENTATION_URL} (SHA-256 {SEGMENTATION_SHA256})."
                 ) from exc
+            digest = _sha256(payload)
+            if digest != SEGMENTATION_SHA256:
+                # Well formed but not the pinned file (edited, or another revision
+                # of the upstream file): the masks follow whatever it contains.
+                LOGGER.warning(
+                    "[SMPL Avatar] %s is not the pinned SMPL part segmentation (SHA-256 %s, "
+                    "expected %s): the part masks follow the segmentation it contains. Delete "
+                    "the file to download the pinned one again.", path, digest, SEGMENTATION_SHA256,
+                )
+            _membership_cache[path] = membership
         return _membership_cache[path]

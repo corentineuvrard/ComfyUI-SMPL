@@ -93,3 +93,10 @@ def installed_models():
                 continue
             found.append((model_type, gender))
     return found
+
+
+def block_import(monkeypatch, name: str) -> None:
+    """Make ``import name`` (and its submodules) fail for one test, installed or not."""
+    for loaded in [m for m in sys.modules if m == name or m.startswith(name + ".")]:
+        monkeypatch.delitem(sys.modules, loaded)
+    monkeypatch.setitem(sys.modules, name, None)  # None in sys.modules: ModuleNotFoundError

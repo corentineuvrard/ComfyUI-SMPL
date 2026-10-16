@@ -10,6 +10,7 @@ from helpers import box_mesh, installed_models
 
 MODELS = installed_models()
 needs_models = pytest.mark.skipif(not MODELS, reason="no SMPL / SMPL-H model files installed")
+each_model = pytest.mark.parametrize("model_type, gender", MODELS, ids=[f"{t}-{g}" for t, g in MODELS])
 
 
 @pytest.fixture()
@@ -75,12 +76,13 @@ def test_half_covered_pixels_are_inside_the_hard_mask(gl_available, cache):
 
 
 def test_renderer_is_reused_until_size_changes(gl_available, cache):
+    # The cache under test lives in this process, so bypass $SMPL_AVATAR_RENDER_PROCESS=worker.
     vertices, faces = box_mesh()
     view = compute_view(vertices, 32, 32)
-    render_mesh(vertices, faces, 32, 32, view, cache=cache)
-    render_mesh(vertices, faces, 32, 32, view, cache=cache)
+    render_mesh(vertices, faces, 32, 32, view, cache=cache, mode="inprocess")
+    render_mesh(vertices, faces, 32, 32, view, cache=cache, mode="inprocess")
     assert cache.creations == 1 and cache.size == (32, 32)
-    render_mesh(vertices, faces, 48, 32, compute_view(vertices, 48, 32), cache=cache)
+    render_mesh(vertices, faces, 48, 32, compute_view(vertices, 48, 32), cache=cache, mode="inprocess")
     assert cache.creations == 2 and cache.size == (48, 32)
 
 
@@ -152,10 +154,10 @@ def test_worker_process_matches_in_process(gl_available, cache, worker, monkeypa
 
 
 @needs_models
-def test_generate_smpl_avatar(gl_available, tmp_path):
+@each_model
+def test_generate_smpl_avatar(gl_available, tmp_path, model_type, gender):
     from smpl_avatar import body_model, pipeline
 
-    model_type, gender = MODELS[0]
     avatar = pipeline.generate(
         model_type, gender, 172.0, 68.0, 256, 384, regressor_path=tmp_path / "reg.npz"
     )
@@ -176,10 +178,10 @@ def test_generate_smpl_avatar(gl_available, tmp_path):
 
 
 @needs_models
-def test_arm_angle_lowers_the_wrists(gl_available):
+@each_model
+def test_arm_angle_lowers_the_wrists(gl_available, model_type, gender):
     from smpl_avatar import body_model
 
-    model_type, gender = MODELS[0]
     body = body_model.load(model_type, gender)
     betas = np.zeros(10)
     _, t_joints = body_model.posed_vertices(body, betas, 0.0)
@@ -192,9 +194,9 @@ def test_arm_angle_lowers_the_wrists(gl_available):
 
 
 @needs_models
-def test_generate_node_outputs(pack, gl_available):
+@each_model
+def test_generate_node_outputs(pack, gl_available, model_type, gender):
     torch = pytest.importorskip("torch")
-    model_type, gender = MODELS[0]
     node = pack.NODE_CLASS_MAPPINGS["SMPLAvatarGenerate"]()
     image, mask, depth, parts = node.generate(model_type, gender, 180.0, 80.0, 128, 192, arm_angle=40.0)
     assert image.shape == depth.shape == (1, 192, 128, 3)

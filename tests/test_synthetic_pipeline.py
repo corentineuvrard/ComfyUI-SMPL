@@ -8,7 +8,7 @@ import zipfile
 import numpy as np
 import pytest
 
-from helpers import REPO
+from helpers import REPO, block_import
 from synthetic_models import (
     dumps_with_fake_chumpy, ellipsoid, mano_dict, model_dict, write_clean_models, write_segmentation,
 )
@@ -28,7 +28,10 @@ def test_synthetic_mesh_has_smpl_sizes():
     assert vertices.shape == (6890, 3) and faces.shape == (13776, 3)
 
 
-def test_prepare_models_from_official_style_zip(tmp_path):
+def test_prepare_models_from_official_style_zip(tmp_path, monkeypatch):
+    # The conversion must never import chumpy, installed or not: with the package
+    # blocked, any such import raises inside prepare.main() and fails the test.
+    block_import(monkeypatch, "chumpy")
     prepare = load_prepare_models()
     archive = tmp_path / "downloads" / "official.zip"
     archive.parent.mkdir()
@@ -39,11 +42,9 @@ def test_prepare_models_from_official_style_zip(tmp_path):
         zf.writestr("mano/models/MANO_LEFT.pkl", dumps_with_fake_chumpy(mano_dict(), chumpy_keys=()))
         zf.writestr("mano/models/MANO_RIGHT.pkl", dumps_with_fake_chumpy(mano_dict(), chumpy_keys=()))
         zf.writestr("__MACOSX/._SMPLH_female.pkl", b"junk")
-    assert "chumpy" not in sys.modules
 
     out = tmp_path / "models"
     assert prepare.main(["--source", str(tmp_path / "downloads"), "--output", str(out)]) == 0
-    assert "chumpy" not in sys.modules
     assert sorted(p.relative_to(out).as_posix() for p in out.rglob("*.pkl")) == [
         "smpl/SMPL_FEMALE.pkl", "smpl/SMPL_MALE.pkl", "smplh/SMPLH_MALE.pkl",
     ]
@@ -64,8 +65,8 @@ def test_prepare_models_from_official_style_zip(tmp_path):
     assert body.v_template.shape == (6890, 3)
     smplx.SMPLH(model_path=str(out / "smplh" / "SMPLH_MALE.pkl"), gender="male", use_pca=False)
 
-    # Existing files are kept unless --force is given.
-    assert prepare.main(["--source", str(tmp_path / "downloads"), "--output", str(out)]) == 1
+    # Existing files are kept unless --force is given; a run that only finds them in place succeeds.
+    assert prepare.main(["--source", str(tmp_path / "downloads"), "--output", str(out)]) == 0
 
 
 def test_prepare_models_rejects_unsupported_chumpy_objects():
@@ -104,6 +105,52 @@ def synthetic_install(tmp_path, monkeypatch, pack, synthetic_models_dir):
         core.pipeline._regressors.clear()
 
 
+def test_prepare_models_skips_invalid_models_and_accepts_existing_outputs(tmp_path, capsys):
+    prepare = load_prepare_models()
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "basicmodel_m_lbs_10_207_0_v1.1.0.pkl").write_bytes(dumps_with_fake_chumpy(model_dict("SMPL")))
+    bad = model_dict("SMPL")
+    bad["J_regressor"] = bad["J_regressor"][:23]
+    (src / "basicmodel_f_lbs_10_207_0_v1.1.0.pkl").write_bytes(dumps_with_fake_chumpy(bad))
+    (src / "SMPLH_male.pkl").write_bytes(dumps_with_fake_chumpy(model_dict("SMPL-H")))
+    (src / "MANO_LEFT.pkl").write_bytes(pickle.dumps({"foo": 1}))  # not a MANO file
+    (src / "MANO_RIGHT.pkl").write_bytes(dumps_with_fake_chumpy(mano_dict(), chumpy_keys=()))
+    out = tmp_path / "models"
+    assert prepare.main(["--source", str(src), "--output", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "'J_regressor' has shape (23, 6890), expected (24, 6890); skipped" in text
+    assert "MANO_LEFT.pkl: not a MANO file (missing ['hands_components', 'hands_mean']); skipped" in text
+    assert "MANO_LEFT.pkl and MANO_RIGHT.pkl are needed for SMPL-H" in text
+    assert "1 model file(s) written, 0 already present, 2 skipped" in text
+    assert sorted(p.name for p in out.rglob("*")) == ["SMPL_MALE.pkl", "smpl"]  # no .tmp, no female, no SMPL-H
+    # A second run without --force finds the converted file in place and succeeds.
+    assert prepare.main(["--source", str(src), "--output", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "(exists; use --force to overwrite)" in text and "1 already present, 2 skipped" in text
+
+
+def test_train_script_skips_corrupt_models(tmp_path, monkeypatch, capsys):
+    from smpl_avatar import body_model, regressor
+
+    spec = importlib.util.spec_from_file_location("train_regressor_sp", REPO / "scripts" / "train_regressor.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    models = tmp_path / "models"  # a private copy: one file is damaged on purpose
+    write_clean_models(models)
+    (models / "smplh" / "SMPLH_FEMALE.pkl").write_bytes(b"not a model")
+    monkeypatch.setenv("SMPL_AVATAR_MODEL_DIR", str(models))
+    body_model.clear_cache()
+    out = tmp_path / "trained.npz"
+    try:
+        assert module.main(["--output", str(out), "--model-types", "SMPL-H", "--samples", "400"]) == 0
+    finally:
+        body_model.clear_cache()
+    text = capsys.readouterr().out
+    assert "skip SMPL-H female" in text and "could not be read as a SMPL-H model file" in text
+    assert list(regressor.load_regressors(out)) == ["smplh_male"]
+
+
 def test_body_models_load_lazily_and_are_cached(synthetic_install):
     from smpl_avatar import body_model
 
@@ -134,6 +181,19 @@ def test_pipeline_end_to_end(synthetic_install, gl_available):
     again = pipeline.generate("SMPL-H", "female", 172.0, 70.0, 160, 240, part_masks=False)
     np.testing.assert_array_equal(again.betas, avatar.betas)
     assert again.render.part_masks is None
+
+
+def test_fixed_framing_warns_when_the_body_is_cut(synthetic_install, gl_available, caplog):
+    from smpl_avatar import pipeline
+
+    with caplog.at_level("WARNING", logger=pipeline.LOGGER.name):
+        pipeline.generate("SMPL", "male", 175.0, 70.0, 64, 96, framing="fixed", view_height_m=0.5, part_masks=False)
+    assert "does not fit the" in caplog.text and "view_height_m" in caplog.text
+    caplog.clear()
+    with caplog.at_level("WARNING", logger=pipeline.LOGGER.name):
+        pipeline.generate("SMPL", "male", 175.0, 70.0, 64, 96, framing="fixed", view_height_m=5.0, part_masks=False)
+        pipeline.generate("SMPL", "male", 175.0, 70.0, 64, 96, framing="fit", part_masks=False)
+    assert "does not fit" not in caplog.text
 
 
 def test_regressor_is_refit_when_the_model_changes(synthetic_install, caplog):
