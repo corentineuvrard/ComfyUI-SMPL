@@ -1,5 +1,5 @@
 [project]
-name = "smpl-avatar"  # Comfy Registry node id: immutable once published
+name = "smpl-avatar"
 version = "0.1.0"
 description = "Generate SMPL / SMPL-H body avatars from height and weight in ComfyUI: shaded render, exact silhouette mask, depth map and 24 body-part masks for ControlNet-style conditioning."
 license = { file = "LICENSE" }
@@ -26,7 +26,6 @@ dependencies = [
 test = ["pytest>=8"]
 
 [project.urls]
-# The GitHub repository must exist before publishing to the Comfy Registry.
 Repository = "https://github.com/corentineuvrard/ComfyUI-SMPL"
 
 [tool.comfy]

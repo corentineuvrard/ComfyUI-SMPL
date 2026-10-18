@@ -1,4 +1,4 @@
-# --- Body model files: never commit them -------------------------------------
+# --- Body model files ---------------------------------------------------------
 # SMPL, SMPL-H and MANO are licensed by the Max Planck Institute for Intelligent
 # Systems and must be downloaded by each user from the official websites.
 # Everything under models/ is local data (body models, the height/weight
