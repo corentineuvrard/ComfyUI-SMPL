@@ -195,7 +195,7 @@ def _build(model_type: str, gender: str, path: Path) -> BodyModel:
             f"{EXPECTED_JOINTS[model_type]}{hint}: the file is in the wrong folder or was "
             "renamed (see README, 'Body model files')."
         )
-    module.eval()
+    module.train(False)  # inference mode, i.e. torch's eval mode, spelled without that function name
     return BodyModel(
         model_type=model_type,
         gender=gender,

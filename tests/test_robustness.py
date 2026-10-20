@@ -251,39 +251,19 @@ def test_smplh_without_mano_gives_format_error(model_dir):
         body_model.load("SMPL-H", "female")
 
 
-class _BrokenPackage:
-    """Meta path finder for a package that is installed but fails to import
-    (chumpy on NumPy >= 1.24: "cannot import name 'bool' from 'numpy'")."""
-
-    def __init__(self, name: str, error: str):
-        self.name, self.error = name, error
-
-    def find_spec(self, fullname, path=None, target=None):
-        import importlib.util
-
-        if fullname == self.name or fullname.startswith(self.name + "."):
-            return importlib.util.spec_from_loader(fullname, self)
-        return None
-
-    def create_module(self, spec):
-        return None
-
-    def exec_module(self, module):
-        # Raised from a frame that belongs to the package, as the real failure is.
-        code = compile(f"raise ImportError({self.error!r}, name='numpy')",
-                       f"site-packages/{self.name}/__init__.py", "exec")
-        exec(code, module.__dict__)
-
-
 def test_broken_chumpy_install_gives_format_error(model_dir, monkeypatch):
+    """A chumpy that is installed but fails to import (chumpy 0.70 on NumPy >= 1.24)."""
     import sys
 
     from smpl_avatar import body_model
 
+    site = model_dir / "site-packages"  # a fake install whose import raises from inside the package
+    (site / "chumpy").mkdir(parents=True)
+    (site / "chumpy" / "__init__.py").write_text(
+        "raise ImportError(\"cannot import name 'bool' from 'numpy'\", name='numpy')\n", encoding="utf-8")
     for loaded in [m for m in sys.modules if m == "chumpy" or m.startswith("chumpy.")]:
         monkeypatch.delitem(sys.modules, loaded)
-    broken = _BrokenPackage("chumpy", "cannot import name 'bool' from 'numpy'")
-    monkeypatch.setattr(sys, "meta_path", [broken] + sys.meta_path)
+    monkeypatch.syspath_prepend(str(site))
     (model_dir / "smpl").mkdir()
     (model_dir / "smpl" / "SMPL_MALE.pkl").write_bytes(dumps_with_fake_chumpy(model_dict("SMPL")))
     with pytest.raises(body_model.BodyModelFormatError, match="chumpy.*prepare_models") as info:
