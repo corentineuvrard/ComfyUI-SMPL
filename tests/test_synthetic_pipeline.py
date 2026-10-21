@@ -69,6 +69,18 @@ def test_prepare_models_from_official_style_zip(tmp_path, monkeypatch):
     assert prepare.main(["--source", str(tmp_path / "downloads"), "--output", str(out)]) == 0
 
 
+def test_prepare_models_writes_to_comfyui_body_models_by_default(tmp_path):
+    prepare = load_prepare_models()
+    pack = tmp_path / "ComfyUI" / "custom_nodes" / "smpl-avatar"
+    pack.mkdir(parents=True)
+    assert prepare.default_output(pack) == pack / "models"  # no ComfyUI/models folder next to it
+    (tmp_path / "ComfyUI" / "models").mkdir()
+    assert prepare.default_output(pack) == tmp_path / "ComfyUI" / "models" / "body_models"
+    elsewhere = tmp_path / "checkout" / "ComfyUI-SMPL"
+    elsewhere.mkdir(parents=True)
+    assert prepare.default_output(elsewhere) == elsewhere / "models"
+
+
 def test_prepare_models_rejects_unsupported_chumpy_objects():
     prepare = load_prepare_models()
     placeholder = type("Select", (prepare.ChumpyPlaceholder,), {"chumpy_class": "chumpy.reordering.Select"})()

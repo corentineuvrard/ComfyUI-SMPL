@@ -31,6 +31,11 @@ The order is the SMPL joint order: part *i* is the region driven by joint *i*.
    `ComfyUI/models/body_models/`,
 3. this pack's `models/` folder.
 
+When ComfyUI loads the pack, it creates `ComfyUI/models/body_models/smpl/`
+and `smplh/` if they do not exist yet, each with an empty placeholder file
+(`put_SMPL_MALE_and_SMPL_FEMALE_here`, `put_SMPLH_MALE_and_SMPLH_FEMALE_here`),
+like ComfyUI's own model folders; existing folders are never touched.
+
 Each location uses the `smpl/` + `smplh/` layout shown in the README (folder and file names
 are matched case-insensitively; `smpl-h/` and `smpl_h/` are accepted too;
 SMPL-H files may also be `.npz` archives of plain arrays, loaded without
@@ -59,7 +64,10 @@ as they are. When several versions of a file are present, the newest
 official release is used and the others are listed; unreadable or invalid
 files are reported and skipped while the other files are still converted;
 the gender-neutral SMPL model (`basicmodel_neutral_...`) is ignored, this
-pack offering the male and female models only. Existing output files are
+pack offering the male and female models only. The output goes to
+`ComfyUI/models/body_models/` when the pack is installed in
+`ComfyUI/custom_nodes/`, and to the pack's own `models/` folder otherwise
+(`--output` overrides both). Existing output files are
 kept (`skip ... (exists; use --force to overwrite)`) and a run that only
 finds them in place succeeds; `--force` replaces them, for example after
 downloading a newer release.

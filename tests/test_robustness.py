@@ -217,6 +217,46 @@ def test_comfyui_extra_model_paths_are_searched(monkeypatch, tmp_path):
     assert paths.find_body_model("SMPL", "male") == extra / "smpl" / "SMPL_MALE.pkl"
 
 
+def _fake_folder_paths(models_dir):
+    import types
+
+    fake = types.ModuleType("folder_paths")
+    fake.models_dir = str(models_dir)
+    fake.folder_names_and_paths = {}
+    fake.add_model_folder_path = lambda name, path: fake.folder_names_and_paths.setdefault(name, ([], set()))[0].append(path)
+    fake.get_folder_paths = lambda name: list(fake.folder_names_and_paths[name][0])
+    return fake
+
+
+def test_placeholders_show_where_the_model_files_go(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "folder_paths", _fake_folder_paths(tmp_path / "models"))
+    monkeypatch.delenv(paths.ENV_MODEL_DIR, raising=False)
+    monkeypatch.setattr(paths, "PACK_MODELS_DIR", tmp_path / "no-pack-models")
+    root = paths.create_placeholders()
+    assert root == tmp_path / "models" / "body_models"
+    assert sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()) == [
+        "smpl/put_SMPL_MALE_and_SMPL_FEMALE_here", "smplh/put_SMPLH_MALE_and_SMPLH_FEMALE_here",
+    ]
+    # A placeholder is never taken for a model file.
+    with pytest.raises(paths.BodyModelNotFoundError, match="body_models"):
+        paths.find_body_model("SMPL", "male")
+    # Existing folders are left alone: a deleted placeholder does not come back.
+    (root / "smpl" / "put_SMPL_MALE_and_SMPL_FEMALE_here").unlink()
+    (root / "smpl" / "SMPL_MALE.pkl").write_bytes(b"x")
+    paths.create_placeholders()
+    assert sorted(p.name for p in (root / "smpl").iterdir()) == ["SMPL_MALE.pkl"]
+    assert paths.find_body_model("SMPL", "male") == root / "smpl" / "SMPL_MALE.pkl"
+
+
+def test_placeholders_need_comfyui_and_tolerate_read_only_folders(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "folder_paths", None)  # outside ComfyUI
+    assert paths.create_placeholders() is None
+    blocker = tmp_path / "models"
+    blocker.write_text("a file where the models folder should be")
+    monkeypatch.setitem(sys.modules, "folder_paths", _fake_folder_paths(blocker))
+    assert paths.create_placeholders() is None
+
+
 # ------------------------------------------------------------ model files
 
 

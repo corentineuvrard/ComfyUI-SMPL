@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 PACK_DIR = Path(__file__).resolve().parent.parent
 PACK_MODELS_DIR = PACK_DIR / "models"
@@ -21,6 +21,14 @@ SEGMENTATION_PATH = PACK_MODELS_DIR / "segmentation" / "smpl_vert_segmentation.j
 MODEL_FILES = {
     "SMPL": (("smpl",), ("SMPL_{G}.pkl",)),
     "SMPL-H": (("smplh", "smpl-h", "smpl_h"), ("SMPLH_{G}.pkl", "SMPLH_{G}.npz")),
+}
+
+
+# Empty files created in ComfyUI/models/body_models/<folder>, like the
+# put_checkpoints_here files of ComfyUI's own model folders.
+PLACEHOLDERS = {
+    "smpl": "put_SMPL_MALE_and_SMPL_FEMALE_here",
+    "smplh": "put_SMPLH_MALE_and_SMPLH_FEMALE_here",
 }
 
 
@@ -55,6 +63,30 @@ def comfyui_model_dirs() -> List[Path]:
         pass
     dirs.append(default)
     return dirs
+
+
+def create_placeholders() -> Optional[Path]:
+    """Create ``<models_dir>/body_models/smpl`` and ``smplh`` with a placeholder file
+    naming what goes there, so users see where the model files belong.
+
+    Inside ComfyUI only (``None`` elsewhere). A folder that already exists is
+    left untouched, so a placeholder the user deleted does not come back.
+    """
+    try:
+        import folder_paths  # provided by ComfyUI
+    except Exception:  # not running inside ComfyUI
+        return None
+    root = Path(folder_paths.models_dir) / "body_models"
+    for folder_name, placeholder in PLACEHOLDERS.items():
+        folder = root / folder_name
+        if folder.exists():
+            continue
+        try:
+            folder.mkdir(parents=True)
+            (folder / placeholder).touch()
+        except OSError:  # read-only installation: nothing to show, nothing to break
+            return None
+    return root
 
 
 def body_model_roots() -> List[Path]:

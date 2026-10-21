@@ -96,11 +96,11 @@ license; see [docs/README.md](docs/README.md).*
 
 ## Installation
 
-1. Put the pack in `ComfyUI/custom_nodes/`: `git clone
-   https://github.com/corentineuvrard/ComfyUI-SMPL` there, or download the
-   ZIP from GitHub and extract it there (rename `ComfyUI-SMPL-main` to
-   `ComfyUI-SMPL`), or install it with ComfyUI-Manager (*Install via Git
-   URL*), which also runs step 2.
+1. Install **SMPL Avatar** from ComfyUI-Manager (search "SMPL"), which also
+   runs step 2. Or put the pack in `ComfyUI/custom_nodes/` yourself: `git
+   clone https://github.com/corentineuvrard/ComfyUI-SMPL` there, or download
+   the ZIP from GitHub and extract it there (rename `ComfyUI-SMPL-main` to
+   `ComfyUI-SMPL`).
 2. Install the requirements with the Python that runs ComfyUI, then start or
    restart ComfyUI:
 
@@ -136,29 +136,32 @@ The SMPL and SMPL-H files are **not** included: each user downloads them.
 
 Both sites require registration and acceptance of a non-commercial license.
 
+The model files go in `ComfyUI/models/body_models/`. The pack creates its
+two folders when ComfyUI starts, each with an empty placeholder file that
+names what goes there:
+
+```
+ComfyUI/models/body_models/
+├── smpl/    SMPL_MALE.pkl, SMPL_FEMALE.pkl
+└── smplh/   SMPLH_MALE.pkl, SMPLH_FEMALE.pkl
+```
+
 The official files contain `chumpy` objects, and the SMPL-H files lack the
-MANO hand parameters `smplx` expects; the script below fixes both without
-chumpy (NumPy only), reading the downloaded zip archives directly:
+MANO hand parameters `smplx` expects. The script below fixes both without
+chumpy (NumPy only), reads the downloaded zip archives directly and writes
+the result into those folders. Run it from the pack's folder
+(`ComfyUI/custom_nodes/ComfyUI-SMPL` after a `git clone`,
+`ComfyUI/custom_nodes/smpl-avatar` when ComfyUI-Manager installed it):
 
 ```bash
 python scripts/prepare_models.py --source path/to/downloads
 ```
 
 (Windows portable build, from the `ComfyUI_windows_portable` folder:
-`python_embeded\python.exe ComfyUI\custom_nodes\ComfyUI-SMPL\scripts\prepare_models.py --source ...`.)
-
-It writes the files to the pack's own `models/` folder, where the node finds
-them without any further configuration (`--output <folder>` writes them
-elsewhere, `--force` replaces existing files):
-
-```
-ComfyUI-SMPL/models/
-├── smpl/SMPL_MALE.pkl, SMPL_FEMALE.pkl
-└── smplh/SMPLH_MALE.pkl, SMPLH_FEMALE.pkl
-```
-
-The node also looks in `ComfyUI/models/body_models/` (same layout) and in
-the folders listed in `SMPL_AVATAR_MODEL_DIR`; details in
+`python_embeded\python.exe ComfyUI\custom_nodes\<pack folder>\scripts\prepare_models.py --source ...`.)
+`--output <folder>` writes the files elsewhere and `--force` replaces
+existing ones. The node also looks in the folders listed in
+`SMPL_AVATAR_MODEL_DIR` and in the pack's own `models/` folder; details in
 [docs/TECHNICAL.md](docs/TECHNICAL.md#where-the-model-files-are-searched).
 
 **Trust note.** The `.pkl` model files are Python pickles, which can execute

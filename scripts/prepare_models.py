@@ -17,6 +17,9 @@ chumpy's PyPI release no longer works with current NumPy releases. This script:
       <output>/smpl/SMPL_MALE.pkl     <output>/smplh/SMPLH_MALE.pkl
       <output>/smpl/SMPL_FEMALE.pkl   <output>/smplh/SMPLH_FEMALE.pkl
 
+  where <output> is ComfyUI/models/body_models when the pack is installed in
+  ComfyUI/custom_nodes, and the pack's own models/ folder otherwise.
+
 Only plain chumpy ``Ch`` arrays are supported, which is what the official
 files contain; a file holding anything else is reported and skipped, like a
 corrupt or truncated one, and the other files are still converted.
@@ -261,14 +264,26 @@ def validate(model_type: str, data: dict) -> None:
                 raise ValueError(f"SMPL-H: missing '{key}' (MANO merge failed)")
 
 
+def default_output(repo: Path = REPO) -> Path:
+    """ComfyUI/models/body_models when the pack sits in ComfyUI/custom_nodes, else <pack>/models."""
+    comfy_models = repo.parent.parent / "models"
+    if repo.parent.name.casefold() == "custom_nodes" and comfy_models.is_dir():
+        return comfy_models / "body_models"
+    return repo / "models"
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", type=Path, required=True,
                         help="folder (searched recursively, zip archives included) or a single file")
-    parser.add_argument("--output", type=Path, default=REPO / "models",
-                        help="output root (default: the node pack's models/ folder)")
+    parser.add_argument("--output", type=Path, default=None,
+                        help="output root (default: ComfyUI/models/body_models when the pack is "
+                             "installed in ComfyUI/custom_nodes, else the pack's models/ folder)")
     parser.add_argument("--force", action="store_true", help="overwrite existing output files")
     args = parser.parse_args(argv)
+    if args.output is None:
+        args.output = default_output()
+    print(f"output {args.output}")
 
     found = discover(args.source)
     for key, candidates in sorted(found.items()):
