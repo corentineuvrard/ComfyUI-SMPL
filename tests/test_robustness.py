@@ -10,7 +10,7 @@ import time
 import numpy as np
 import pytest
 
-from helpers import REPO, box_mesh
+from helpers import REPO, block_import, box_mesh
 from smpl_avatar import gl_platform, paths, regressor, render, segmentation
 from smpl_avatar.render import RenderWorker, compute_view
 from synthetic_models import dumps_with_fake_chumpy, mano_dict, model_dict
@@ -189,6 +189,7 @@ def test_model_dir_entries_tolerate_quotes_and_spaces(monkeypatch, tmp_path):
 
 
 def test_not_found_message_is_actionable(monkeypatch, tmp_path):
+    block_import(monkeypatch, "folder_paths")  # ComfyUI's portable Python can import it outside ComfyUI
     monkeypatch.setenv(paths.ENV_MODEL_DIR, str(tmp_path))
     monkeypatch.setattr(paths, "PACK_MODELS_DIR", tmp_path / "no-pack-models")
     with pytest.raises(paths.BodyModelNotFoundError) as info:
@@ -272,7 +273,6 @@ def model_dir(tmp_path, monkeypatch):
 
 def test_unconverted_chumpy_file_gives_format_error(model_dir, monkeypatch):
     from smpl_avatar import body_model
-    from helpers import block_import
 
     block_import(monkeypatch, "chumpy")  # same outcome whether or not chumpy is installed
     (model_dir / "smpl").mkdir()
@@ -335,7 +335,6 @@ def test_file_from_another_environment_is_not_blamed_on_chumpy(model_dir, monkey
 
 def test_sparse_matrices_without_scipy_give_format_error(model_dir, monkeypatch):
     from smpl_avatar import body_model
-    from helpers import block_import
 
     block_import(monkeypatch, "scipy")
     (model_dir / "smpl").mkdir()
@@ -604,6 +603,7 @@ def test_train_script_tolerates_unreadable_output(tmp_path, monkeypatch, capsys)
     np.savez(bad, format_version=np.array(99), feature_names=np.array(regressor.FEATURE_NAMES), keys=np.array([], dtype=str))
     monkeypatch.setenv(paths.ENV_MODEL_DIR, str(tmp_path / "nothing"))
     monkeypatch.setattr(paths, "PACK_MODELS_DIR", tmp_path / "no-pack-models")
+    block_import(monkeypatch, "folder_paths")  # ComfyUI's portable Python can import it outside ComfyUI
     from smpl_avatar import body_model
 
     body_model.clear_cache()
