@@ -3,6 +3,7 @@ import os
 import pytest
 
 from helpers import load_pack, machine_has_no_gl
+from smpl_avatar.render import import_pyrender
 
 
 @pytest.fixture(scope="session")
@@ -18,8 +19,6 @@ def gl_available():
     tests fail instead. Set SMPL_AVATAR_REQUIRE_GL=1 to never skip (GPU CI).
     """
     try:
-        from smpl_avatar.render import import_pyrender
-
         pyrender = import_pyrender()
         renderer = pyrender.OffscreenRenderer(8, 8)
         renderer.delete()

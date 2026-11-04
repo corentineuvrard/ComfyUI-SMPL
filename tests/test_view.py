@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from smpl_avatar.render import OrthoView, compute_view, rotate_y, vertex_normals
 from helpers import box_mesh
+from smpl_avatar.render import OrthoView, compute_view, rotate_y, vertex_normals
 
 
 def body_like_points():

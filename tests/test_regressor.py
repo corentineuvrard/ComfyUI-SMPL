@@ -3,9 +3,9 @@ import json
 import numpy as np
 import pytest
 
-from smpl_avatar import regressor
-from smpl_avatar.regressor import LinearBetaRegressor, NUM_BETAS
 from helpers import box_mesh
+from smpl_avatar import regressor
+from smpl_avatar.regressor import NUM_BETAS, LinearBetaRegressor
 
 
 def synthetic_body(seed=0):

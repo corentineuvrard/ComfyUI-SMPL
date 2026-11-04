@@ -1,6 +1,5 @@
 """End-to-end tests on synthetic model files (no licensed SMPL data needed)."""
 
-import importlib.util
 import pickle
 import sys
 import zipfile
@@ -8,19 +7,13 @@ import zipfile
 import numpy as np
 import pytest
 
-from helpers import REPO, block_import
+from helpers import block_import, load_script
+from smpl_avatar import body_model, pipeline, regressor
 from synthetic_models import (
     dumps_with_fake_chumpy, ellipsoid, mano_dict, model_dict, write_clean_models, write_segmentation,
 )
 
 smplx = pytest.importorskip("smplx")
-
-
-def load_prepare_models():
-    spec = importlib.util.spec_from_file_location("prepare_models", REPO / "scripts" / "prepare_models.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_synthetic_mesh_has_smpl_sizes():
@@ -32,7 +25,7 @@ def test_prepare_models_from_official_style_zip(tmp_path, monkeypatch):
     # The conversion must never import chumpy, installed or not: with the package
     # blocked, any such import raises inside prepare.main() and fails the test.
     block_import(monkeypatch, "chumpy")
-    prepare = load_prepare_models()
+    prepare = load_script("prepare_models")
     archive = tmp_path / "downloads" / "official.zip"
     archive.parent.mkdir()
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -70,7 +63,7 @@ def test_prepare_models_from_official_style_zip(tmp_path, monkeypatch):
 
 
 def test_prepare_models_writes_to_comfyui_body_models_by_default(tmp_path):
-    prepare = load_prepare_models()
+    prepare = load_script("prepare_models")
     pack = tmp_path / "ComfyUI" / "custom_nodes" / "smpl-avatar"
     pack.mkdir(parents=True)
     assert prepare.default_output(pack) == pack / "models"  # no ComfyUI/models folder next to it
@@ -82,7 +75,7 @@ def test_prepare_models_writes_to_comfyui_body_models_by_default(tmp_path):
 
 
 def test_prepare_models_rejects_unsupported_chumpy_objects():
-    prepare = load_prepare_models()
+    prepare = load_script("prepare_models")
     placeholder = type("Select", (prepare.ChumpyPlaceholder,), {"chumpy_class": "chumpy.reordering.Select"})()
     placeholder.__setstate__({"a": 1})
     with pytest.raises(ValueError, match="unsupported chumpy object"):
@@ -100,8 +93,6 @@ def synthetic_models_dir(tmp_path_factory):
 @pytest.fixture()
 def synthetic_install(tmp_path, monkeypatch, pack, synthetic_models_dir):
     """Synthetic models + segmentation, wired into both copies of the core package."""
-    importlib.import_module("smpl_avatar.pipeline")  # plain copy used by the library tests
-
     models = synthetic_models_dir
     seg = write_segmentation(tmp_path / "seg.json")
     monkeypatch.setenv("SMPL_AVATAR_MODEL_DIR", str(models))
@@ -118,7 +109,7 @@ def synthetic_install(tmp_path, monkeypatch, pack, synthetic_models_dir):
 
 
 def test_prepare_models_skips_invalid_models_and_accepts_existing_outputs(tmp_path, capsys):
-    prepare = load_prepare_models()
+    prepare = load_script("prepare_models")
     src = tmp_path / "src"
     src.mkdir()
     (src / "basicmodel_m_lbs_10_207_0_v1.1.0.pkl").write_bytes(dumps_with_fake_chumpy(model_dict("SMPL")))
@@ -143,11 +134,7 @@ def test_prepare_models_skips_invalid_models_and_accepts_existing_outputs(tmp_pa
 
 
 def test_train_script_skips_corrupt_models(tmp_path, monkeypatch, capsys):
-    from smpl_avatar import body_model, regressor
-
-    spec = importlib.util.spec_from_file_location("train_regressor_sp", REPO / "scripts" / "train_regressor.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = load_script("train_regressor")
     models = tmp_path / "models"  # a private copy: one file is damaged on purpose
     write_clean_models(models)
     (models / "smplh" / "SMPLH_FEMALE.pkl").write_bytes(b"not a model")
@@ -164,8 +151,6 @@ def test_train_script_skips_corrupt_models(tmp_path, monkeypatch, capsys):
 
 
 def test_body_models_load_lazily_and_are_cached(synthetic_install):
-    from smpl_avatar import body_model
-
     assert body_model.cached_keys() == []
     male = body_model.load("SMPL", "male")
     assert body_model.load("SMPL", "male") is male
@@ -176,8 +161,6 @@ def test_body_models_load_lazily_and_are_cached(synthetic_install):
 
 
 def test_pipeline_end_to_end(synthetic_install, gl_available):
-    from smpl_avatar import pipeline, regressor
-
     avatar = pipeline.generate("SMPL-H", "female", 172.0, 70.0, 160, 240)
     r = avatar.render
     assert r.image.shape == (240, 160, 3) and r.part_masks.shape == (24, 240, 160)
@@ -196,8 +179,6 @@ def test_pipeline_end_to_end(synthetic_install, gl_available):
 
 
 def test_fixed_framing_warns_when_the_body_is_cut(synthetic_install, gl_available, caplog):
-    from smpl_avatar import pipeline
-
     with caplog.at_level("WARNING", logger=pipeline.LOGGER.name):
         pipeline.generate("SMPL", "male", 175.0, 70.0, 64, 96, framing="fixed", view_height_m=0.5, part_masks=False)
     assert "does not fit the" in caplog.text and "view_height_m" in caplog.text
@@ -210,8 +191,6 @@ def test_fixed_framing_warns_when_the_body_is_cut(synthetic_install, gl_availabl
 
 def test_regressor_is_refit_when_the_model_changes(synthetic_install, caplog):
     """A stored regressor fitted on another model file is replaced; corrupt files are ignored."""
-    from smpl_avatar import body_model, pipeline, regressor
-
     body = body_model.load("SMPL", "male")
     path = synthetic_install / "regressor.npz"
     first = pipeline.regressor_for(body, path)
@@ -236,8 +215,6 @@ def test_regressor_is_refit_when_the_model_changes(synthetic_install, caplog):
 
 
 def test_out_of_range_request_logs_a_warning(synthetic_install, gl_available, caplog):
-    from smpl_avatar import pipeline
-
     with caplog.at_level("WARNING", logger=pipeline.LOGGER.name):
         pipeline.generate("SMPL", "male", 172.0, 70.0, 64, 96, part_masks=False)
     assert "height/weight regressor" not in caplog.text

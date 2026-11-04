@@ -1,28 +1,25 @@
 """Failure paths a user can hit: corrupt files, hung or chatty workers, bad settings."""
 
+import gc
+import hashlib
 import json
 import pickle
 import subprocess
 import sys
 import textwrap
+import threading
 import time
+import types
+import zipfile
 
 import numpy as np
 import pytest
 
-from helpers import REPO, block_import, box_mesh
-from smpl_avatar import gl_platform, paths, regressor, render, segmentation
+from helpers import REPO, block_import, box_mesh, load_script
+from smpl_avatar import body_model, gl_platform, paths, pipeline, regressor, render, segmentation
+from smpl_avatar.pipeline import extrapolation_warning
 from smpl_avatar.render import RenderWorker, compute_view
-from synthetic_models import dumps_with_fake_chumpy, mano_dict, model_dict
-
-
-def load_prepare_models():
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("prepare_models_rb", REPO / "scripts" / "prepare_models.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from synthetic_models import dumps_with_fake_chumpy, mano_dict, model_dict, write_segmentation
 
 
 # ------------------------------------------------------------------ worker
@@ -99,8 +96,6 @@ def test_worker_stderr_is_relayed_to_the_log(monkeypatch, tmp_path, worker, capl
 
 def test_close_does_not_wait_for_a_stuck_render(monkeypatch, tmp_path):
     """close() (the atexit handler) must return even while a render is blocked on a hung worker."""
-    import threading
-
     stub = _stub_worker(tmp_path, """
         sys.stdout.buffer.write(b"SMPLAVW1"); sys.stdout.flush()
         sys.stdin.buffer.read(8)
@@ -147,8 +142,6 @@ def test_render_timeout_rejects_garbage(monkeypatch):
 
 def test_inprocess_rendering_from_another_thread_is_refused(gl_available):
     """The OpenGL context is thread-bound: a clear error, not a driver crash."""
-    import threading
-
     cache = render.RendererCache()
     vertices, faces = box_mesh()
     view = compute_view(vertices, 16, 16)
@@ -201,8 +194,6 @@ def test_not_found_message_is_actionable(monkeypatch, tmp_path):
 
 def test_comfyui_extra_model_paths_are_searched(monkeypatch, tmp_path):
     """A body_models entry of extra_model_paths.yaml (registered in folder_paths) is used."""
-    import types
-
     extra = tmp_path / "shared" / "body_models"
     (extra / "smpl").mkdir(parents=True)
     (extra / "smpl" / "SMPL_MALE.pkl").write_bytes(b"x")
@@ -219,8 +210,6 @@ def test_comfyui_extra_model_paths_are_searched(monkeypatch, tmp_path):
 
 
 def _fake_folder_paths(models_dir):
-    import types
-
     fake = types.ModuleType("folder_paths")
     fake.models_dir = str(models_dir)
     fake.folder_names_and_paths = {}
@@ -263,8 +252,6 @@ def test_placeholders_need_comfyui_and_tolerate_read_only_folders(monkeypatch, t
 
 @pytest.fixture()
 def model_dir(tmp_path, monkeypatch):
-    from smpl_avatar import body_model
-
     monkeypatch.setenv(paths.ENV_MODEL_DIR, str(tmp_path))
     body_model.clear_cache()
     yield tmp_path
@@ -272,8 +259,6 @@ def model_dir(tmp_path, monkeypatch):
 
 
 def test_unconverted_chumpy_file_gives_format_error(model_dir, monkeypatch):
-    from smpl_avatar import body_model
-
     block_import(monkeypatch, "chumpy")  # same outcome whether or not chumpy is installed
     (model_dir / "smpl").mkdir()
     (model_dir / "smpl" / "SMPL_MALE.pkl").write_bytes(dumps_with_fake_chumpy(model_dict("SMPL")))
@@ -282,8 +267,6 @@ def test_unconverted_chumpy_file_gives_format_error(model_dir, monkeypatch):
 
 
 def test_smplh_without_mano_gives_format_error(model_dir):
-    from smpl_avatar import body_model
-
     (model_dir / "smplh").mkdir()
     with open(model_dir / "smplh" / "SMPLH_FEMALE.pkl", "wb") as handle:
         pickle.dump(model_dict("SMPL-H"), handle)
@@ -293,10 +276,6 @@ def test_smplh_without_mano_gives_format_error(model_dir):
 
 def test_broken_chumpy_install_gives_format_error(model_dir, monkeypatch):
     """A chumpy that is installed but fails to import (chumpy 0.70 on NumPy >= 1.24)."""
-    import sys
-
-    from smpl_avatar import body_model
-
     site = model_dir / "site-packages"  # a fake install whose import raises from inside the package
     (site / "chumpy").mkdir(parents=True)
     (site / "chumpy" / "__init__.py").write_text(
@@ -314,11 +293,6 @@ def test_broken_chumpy_install_gives_format_error(model_dir, monkeypatch):
 
 def test_file_from_another_environment_is_not_blamed_on_chumpy(model_dir, monkeypatch):
     """A pickle that references a module missing here (not chumpy / scipy) gets its own advice."""
-    import sys
-    import types
-
-    from smpl_avatar import body_model
-
     fake = types.ModuleType("no_such_pkg")
     fake.Thing = type("Thing", (), {"__module__": "no_such_pkg"})
     monkeypatch.setitem(sys.modules, "no_such_pkg", fake)
@@ -334,8 +308,6 @@ def test_file_from_another_environment_is_not_blamed_on_chumpy(model_dir, monkey
 
 
 def test_sparse_matrices_without_scipy_give_format_error(model_dir, monkeypatch):
-    from smpl_avatar import body_model
-
     block_import(monkeypatch, "scipy")
     (model_dir / "smpl").mkdir()
     (model_dir / "smpl" / "SMPL_MALE.pkl").write_bytes(
@@ -346,8 +318,6 @@ def test_sparse_matrices_without_scipy_give_format_error(model_dir, monkeypatch)
 
 def test_model_of_the_other_type_is_rejected_before_caching(model_dir):
     """An SMPL-H file in the smpl folder loads in smplx and would only fail at render time."""
-    from smpl_avatar import body_model
-
     (model_dir / "smpl").mkdir()
     with open(model_dir / "smpl" / "SMPL_MALE.pkl", "wb") as handle:
         pickle.dump(model_dict("SMPL-H"), handle)
@@ -358,8 +328,6 @@ def test_model_of_the_other_type_is_rejected_before_caching(model_dir):
 
 @pytest.mark.parametrize("payload", [b"", b"\x00" * 100, b"<html>login</html>", pickle.dumps([1, 2, 3])])
 def test_corrupt_model_file_gives_format_error(model_dir, payload):
-    from smpl_avatar import body_model
-
     (model_dir / "smpl").mkdir()
     (model_dir / "smpl" / "SMPL_MALE.pkl").write_bytes(payload)
     with pytest.raises(body_model.BodyModelFormatError, match="could not be read"):
@@ -368,8 +336,6 @@ def test_corrupt_model_file_gives_format_error(model_dir, payload):
 
 def test_smplh_npz_never_unpickles(model_dir):
     """An .npz with object arrays must be rejected, never executed."""
-    from smpl_avatar import body_model
-
     marker = model_dir / "pwned.txt"
 
     class Evil:
@@ -433,8 +399,6 @@ def test_corrupt_segmentation_file_is_reported_with_path(tmp_path, payload):
 
 
 def test_unpinned_segmentation_file_logs_a_warning(tmp_path, caplog):
-    from synthetic_models import write_segmentation
-
     path = tmp_path / "seg.json"
     write_segmentation(path)
     with caplog.at_level("WARNING", logger=segmentation.LOGGER.name):
@@ -465,7 +429,7 @@ def test_oversized_download_is_rejected(tmp_path, monkeypatch):
 
 
 def test_prepare_models_reports_corrupt_and_duplicate_files(tmp_path, capsys):
-    prepare = load_prepare_models()
+    prepare = load_script("prepare_models")
     src = tmp_path / "src"
     src.mkdir()
     (src / "basicmodel_m_lbs_10_207_0_v1.1.0.pkl").write_bytes(b"not a pickle at all")
@@ -486,7 +450,7 @@ def test_prepare_models_reports_corrupt_and_duplicate_files(tmp_path, capsys):
 
 def test_prepare_models_converts_sparse_matrices_without_scipy(tmp_path):
     """csc (SMPL) and coo (SMPL-H) J_regressor pickles are densified by NumPy alone."""
-    prepare = load_prepare_models()
+    prepare = load_script("prepare_models")
     rng = np.random.default_rng(3)
     dense = np.zeros((24, 6890))
     dense[rng.integers(0, 24, 300), rng.integers(0, 6890, 300)] = rng.uniform(0.1, 1.0, 300)
@@ -524,8 +488,6 @@ def test_prepare_models_converts_sparse_matrices_without_scipy(tmp_path):
 def test_prepare_models_handles_zip_sparse_and_mano_without_scipy(tmp_path):
     """End to end on an official-style zip, in a subprocess where scipy cannot be imported."""
     archive = tmp_path / "SMPL_python_v.1.1.0.zip"
-    import zipfile
-
     smpl = model_dict("SMPL")
     smplh = model_dict("SMPL-H")
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -556,11 +518,7 @@ def test_prepare_models_handles_zip_sparse_and_mano_without_scipy(tmp_path):
 
 
 def test_download_script_fails_cleanly_offline(tmp_path, monkeypatch):
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("download_segmentation_rb", REPO / "scripts" / "download_segmentation.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = load_script("download_segmentation")
 
     def offline(url, timeout):
         raise OSError("name resolution failed")
@@ -570,13 +528,7 @@ def test_download_script_fails_cleanly_offline(tmp_path, monkeypatch):
 
 
 def test_download_script_checks_an_existing_file(tmp_path, monkeypatch, capsys):
-    import importlib.util
-
-    from synthetic_models import write_segmentation
-
-    spec = importlib.util.spec_from_file_location("download_segmentation_rb2", REPO / "scripts" / "download_segmentation.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = load_script("download_segmentation")
     path = tmp_path / "seg.json"
     write_segmentation(path)  # well formed, but not the pinned file
     assert module.main(["--output", str(path)]) == 1
@@ -594,18 +546,12 @@ def test_download_script_checks_an_existing_file(tmp_path, monkeypatch, capsys):
 
 def test_train_script_tolerates_unreadable_output(tmp_path, monkeypatch, capsys):
     """An existing --output in another format is replaced with a warning, like the node does."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("train_regressor_rb", REPO / "scripts" / "train_regressor.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = load_script("train_regressor")
     bad = tmp_path / "reg.npz"
     np.savez(bad, format_version=np.array(99), feature_names=np.array(regressor.FEATURE_NAMES), keys=np.array([], dtype=str))
     monkeypatch.setenv(paths.ENV_MODEL_DIR, str(tmp_path / "nothing"))
     monkeypatch.setattr(paths, "PACK_MODELS_DIR", tmp_path / "no-pack-models")
     block_import(monkeypatch, "folder_paths")  # ComfyUI's portable Python can import it outside ComfyUI
-    from smpl_avatar import body_model
-
     body_model.clear_cache()
     # No model installed: the script warns about the file, then reports nothing to do.
     assert module.main(["--output", str(bad), "--model-types", "SMPL", "--genders", "male"]) == 1
@@ -620,8 +566,6 @@ def test_train_script_tolerates_unreadable_output(tmp_path, monkeypatch, capsys)
     {"arm_angle": float("inf")}, {"yaw": float("nan")}, {"view_height_m": float("nan")}, {"view_height_m": 0.0},
 ])
 def test_generate_rejects_bad_inputs_before_loading_a_model(monkeypatch, override):
-    from smpl_avatar import pipeline
-
     monkeypatch.setattr(pipeline.body_model, "load", lambda *a, **k: pytest.fail("a model was loaded"))
     kwargs = dict(model_type="SMPL", gender="male", height_cm=175.0, weight_kg=70.0, width=64, height=96)
     kwargs.update(override)
@@ -630,10 +574,6 @@ def test_generate_rejects_bad_inputs_before_loading_a_model(monkeypatch, overrid
 
 
 def test_fixed_framing_clipping_is_reported():
-    from smpl_avatar import pipeline
-    from smpl_avatar.render import compute_view
-    from helpers import box_mesh
-
     vertices, _ = box_mesh(size=(2.0, 1.8, 0.3))  # a 2 m wide, 1.8 m tall body
     assert pipeline.clipping_warning(vertices, compute_view(vertices, 512, 768)) is None  # fit
     wide = compute_view(vertices, 512, 768, framing="fixed", view_height_m=4.0)  # 2.67 m wide
@@ -651,7 +591,6 @@ def test_extrapolation_warning_logic():
     reg = regressor.LinearBetaRegressor(np.zeros((2, 10)), np.zeros(10), {
         "training_height_range_cm": [150.0, 200.0], "training_weight_range_kg": [40.0, 150.0],
     })
-    from smpl_avatar.pipeline import extrapolation_warning
 
     assert extrapolation_warning(reg, 175, 70, 175.3, 70.5, np.ones(10)) is None
     tall = extrapolation_warning(reg, 220, 165, 221.0, 194.0, np.ones(10) * 5.7)
@@ -668,8 +607,6 @@ def test_extrapolation_warning_logic():
 
 def test_segmentation_json_is_the_pinned_one_or_absent():
     """Guard: the on-disk file used by other tests must be the pinned Meshcapade file."""
-    import hashlib
-
     path = paths.SEGMENTATION_PATH
     if not path.is_file():
         pytest.skip("segmentation not downloaded")
@@ -681,10 +618,6 @@ def test_segmentation_json_is_the_pinned_one_or_absent():
 def test_release_from_another_thread_keeps_the_renderer_alive(monkeypatch):
     """pyrender's __del__ calls delete(): dropping the last reference would tear down
     the OpenGL context on the wrong thread (noisy at ComfyUI exit)."""
-    import gc
-    import threading
-    import types
-
     deleted = []
 
     class FakeRenderer:
@@ -716,8 +649,6 @@ def test_release_from_another_thread_keeps_the_renderer_alive(monkeypatch):
 
 @pytest.mark.parametrize("damage", ["truncated", "garbage"])
 def test_damaged_smplh_npz_gives_format_error(model_dir, damage):
-    from smpl_avatar import body_model
-
     (model_dir / "smplh").mkdir()
     target = model_dir / "smplh" / "SMPLH_MALE.npz"
     np.savez(target, v_template=np.zeros((6890, 3)), f=np.zeros((13776, 3), dtype=np.int64))
@@ -728,7 +659,7 @@ def test_damaged_smplh_npz_gives_format_error(model_dir, damage):
 
 
 def test_version_key_ignores_folder_and_archive_names():
-    prepare = load_prepare_models()
+    prepare = load_script("prepare_models")
     assert prepare.version_key("downloads/SMPL_python_v.1.1.0.zip!smpl/basicmodel_m_lbs_10_207_0_v1.0.0.pkl") == (1, 0, 0)
     assert prepare.version_key("C:\\models_v2.0.0\\basicmodel_f_lbs_10_207_0_v1.1.0.pkl") == (1, 1, 0)
     assert prepare.version_key("mano/models/SMPLH_male.pkl") == (0, 0, 0)

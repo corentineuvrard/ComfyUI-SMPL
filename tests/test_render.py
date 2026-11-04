@@ -1,12 +1,16 @@
 """Rendering tests. They need an OpenGL context; SMPL tests also need the model files."""
 
+import subprocess
+import sys
+import textwrap
+
 import numpy as np
 import pytest
 
-from smpl_avatar import render
+from helpers import REPO, box_mesh, installed_models, machine_has_no_gl
+from smpl_avatar import body_model, pipeline, render
 from smpl_avatar.render import RendererCache, compute_view, render_mesh
 from smpl_avatar.segmentation import NUM_PARTS
-from helpers import box_mesh, installed_models
 
 MODELS = installed_models()
 needs_models = pytest.mark.skipif(not MODELS, reason="no SMPL / SMPL-H model files installed")
@@ -156,8 +160,6 @@ def test_worker_process_matches_in_process(gl_available, cache, worker, monkeypa
 @needs_models
 @each_model
 def test_generate_smpl_avatar(gl_available, tmp_path, model_type, gender):
-    from smpl_avatar import body_model, pipeline
-
     avatar = pipeline.generate(
         model_type, gender, 172.0, 68.0, 256, 384, regressor_path=tmp_path / "reg.npz"
     )
@@ -180,8 +182,6 @@ def test_generate_smpl_avatar(gl_available, tmp_path, model_type, gender):
 @needs_models
 @each_model
 def test_arm_angle_lowers_the_wrists(gl_available, model_type, gender):
-    from smpl_avatar import body_model
-
     body = body_model.load(model_type, gender)
     betas = np.zeros(10)
     _, t_joints = body_model.posed_vertices(body, betas, 0.0)
@@ -240,19 +240,11 @@ def _wrapped(inner: BaseException) -> BaseException:
     (TypeError("unexpected keyword argument"), False),
 ])
 def test_only_missing_opengl_skips_rendering_tests(exc, skip):
-    from helpers import machine_has_no_gl
-
     assert machine_has_no_gl(exc) is skip
 
 
 def test_real_import_failure_is_not_mistaken_for_missing_opengl():
     """End to end: a missing dependency behind import_pyrender() must fail, not skip."""
-    import subprocess
-    import sys
-    import textwrap
-
-    from helpers import REPO
-
     code = textwrap.dedent(f"""
         import sys
         sys.path[:0] = [{str(REPO)!r}, {str(REPO / "tests")!r}]

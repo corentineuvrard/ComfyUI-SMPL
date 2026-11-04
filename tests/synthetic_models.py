@@ -15,6 +15,8 @@ from pathlib import Path
 
 import numpy as np
 
+from smpl_avatar.segmentation import PART_NAMES
+
 SMPL_PARENTS = [-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21]
 SMPLH_PARENTS = SMPL_PARENTS[:22] + [
     p for wrist, start in ((20, 22), (21, 37)) for f in range(5)
@@ -164,8 +166,6 @@ def dumps_with_fake_chumpy(data: dict, chumpy_keys=("shapedirs", "v_template", "
 
 def write_segmentation(path: Path, vertices=None):
     """24 parts made of horizontal bands of the ellipsoid (boundary rows shared)."""
-    from smpl_avatar.segmentation import PART_NAMES
-
     if vertices is None:
         vertices, _ = ellipsoid()
     order = np.argsort(-vertices[:, 1], kind="stable")

@@ -10,6 +10,8 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from smpl_avatar import paths  # noqa: E402
+
 
 def load_pack(name: str = "smpl_avatar_pack_under_test"):
     """Import the repository folder the way ComfyUI imports a custom node."""
@@ -20,6 +22,14 @@ def load_pack(name: str = "smpl_avatar_pack_under_test"):
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_script(name: str):
+    """Load ``scripts/<name>.py`` as a module, without running it as a program."""
+    spec = importlib.util.spec_from_file_location(f"script_{name}", REPO / "scripts" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
@@ -82,8 +92,6 @@ def box_mesh(size=(1.0, 1.0, 1.0), center=(0.0, 0.0, 0.0)):
 
 
 def installed_models():
-    from smpl_avatar import paths
-
     found = []
     for model_type in ("SMPL", "SMPL-H"):
         for gender in ("male", "female"):

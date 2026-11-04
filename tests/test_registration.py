@@ -5,6 +5,7 @@ import textwrap
 import pytest
 
 from helpers import REPO
+from smpl_avatar.segmentation import PART_NAMES
 
 STANDARD_TYPES = {"IMAGE", "MASK", "INT", "FLOAT", "BOOLEAN", "STRING"}
 
@@ -52,8 +53,6 @@ def test_generate_inputs(pack):
 
 
 def test_union_node_inputs_list_every_part(pack):
-    from smpl_avatar.segmentation import PART_NAMES
-
     spec = pack.NODE_CLASS_MAPPINGS["SMPLAvatarPartMaskUnion"].INPUT_TYPES()
     toggles = [name for name, (kind, _) in spec["required"].items() if kind == "BOOLEAN"]
     assert toggles == list(PART_NAMES)
