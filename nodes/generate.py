@@ -1,40 +1,13 @@
-"""ComfyUI node definitions (classic V1 node API)."""
+"""Generate SMPL Avatar: build a body from a height and a weight, and render one view."""
 
 from __future__ import annotations
 
-import logging
-
 import numpy as np
 
-from .smpl_avatar import body_model, masks, pipeline, render
-from .smpl_avatar.segmentation import NUM_PARTS, PART_DESCRIPTIONS, PART_NAMES
-
-CATEGORY = "SMPL Avatar"
-LOGGER = logging.getLogger(__name__)
-
-
-def _to_tensor(array: np.ndarray):
-    import torch
-
-    return torch.from_numpy(np.ascontiguousarray(array, dtype=np.float32))
-
-
-def grow_mask(mask, pixels: int):
-    """Dilate (``pixels > 0``) or erode (``pixels < 0``) a ``(N, H, W)`` mask with a square kernel."""
-    if not pixels:
-        return mask
-    import torch.nn.functional as F
-
-    radius = abs(int(pixels))
-    x = mask[:, None]
-    if pixels > 0:
-        y = F.max_pool2d(x, kernel_size=2 * radius + 1, stride=1, padding=radius)
-    else:
-        # max_pool2d pads with -inf; after negation that would count everything
-        # outside the image as inside the mask, so pad with zeros explicitly.
-        x = F.pad(x, (radius, radius, radius, radius), value=0.0)
-        y = -F.max_pool2d(-x, kernel_size=2 * radius + 1, stride=1)
-    return y[:, 0]
+from ..smpl_avatar import body_model, pipeline, render
+from ..smpl_avatar.segmentation import NUM_PARTS
+from .common import CATEGORY
+from .tensors import to_tensor
 
 
 class SMPLAvatarGenerate:
@@ -147,63 +120,8 @@ class SMPLAvatarGenerate:
             part_masks = np.zeros((NUM_PARTS, height, width), dtype=np.float32)
         depth_rgb = np.repeat(result.depth[..., None], 3, axis=2)
         return (
-            _to_tensor(result.image)[None],
-            _to_tensor(result.mask)[None],
-            _to_tensor(depth_rgb)[None],
-            _to_tensor(part_masks),
+            to_tensor(result.image)[None],
+            to_tensor(result.mask)[None],
+            to_tensor(depth_rgb)[None],
+            to_tensor(part_masks),
         )
-
-
-class SMPLAvatarPartMaskUnion:
-    DESCRIPTION = (
-        "Combine SMPL body-part masks into a single mask. Select parts with a preset, the "
-        "individual toggles, or both (the selection is the union of the two)."
-    )
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        required = {
-            "part_masks": ("MASK", {"tooltip": "The 'part_masks' output of 'Generate SMPL Avatar'."}),
-            "preset": (list(masks.PRESETS), {"default": "none", "tooltip": "Group of parts to include."}),
-        }
-        for name in PART_NAMES:
-            required[name] = ("BOOLEAN", {"default": False, "tooltip": PART_DESCRIPTIONS[name]})
-        return {
-            "required": required,
-            "optional": {
-                "grow_px": ("INT", {
-                    "default": 0, "min": -64, "max": 64, "step": 1,
-                    "tooltip": "Dilate (positive) or erode (negative) the result by this many pixels.",
-                }),
-            },
-        }
-
-    RETURN_TYPES = ("MASK",)
-    RETURN_NAMES = ("mask",)
-    OUTPUT_TOOLTIPS = ("Union of the selected parts (1 = selected).",)
-    FUNCTION = "union"
-    CATEGORY = CATEGORY
-
-    def union(self, part_masks, preset="none", grow_px=0, **toggles):
-        names = set(masks.PRESETS[preset])
-        names.update(name for name in PART_NAMES if toggles.get(name))
-        array = part_masks.detach().cpu().numpy() if hasattr(part_masks, "detach") else np.asarray(part_masks)
-        result = masks.union_part_masks(array, masks.part_indices(names))
-        if not array.any():
-            LOGGER.warning(
-                "[SMPL Avatar] Union SMPL Part Masks: every input part mask is empty, so the "
-                "output is empty too: usually 'compute_part_masks' is off on Generate SMPL "
-                "Avatar, or the body lies outside the view (framing = fixed)."
-            )
-        return (grow_mask(_to_tensor(result), grow_px),)
-
-
-NODE_CLASS_MAPPINGS = {
-    "SMPLAvatarGenerate": SMPLAvatarGenerate,
-    "SMPLAvatarPartMaskUnion": SMPLAvatarPartMaskUnion,
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "SMPLAvatarGenerate": "Generate SMPL Avatar",
-    "SMPLAvatarPartMaskUnion": "Union SMPL Part Masks",
-}
