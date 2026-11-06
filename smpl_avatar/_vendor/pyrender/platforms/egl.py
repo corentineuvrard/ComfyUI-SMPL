@@ -1,5 +1,6 @@
 import ctypes
 import os
+import threading
 
 import OpenGL.platform
 
@@ -7,6 +8,16 @@ from .base import Platform
 
 EGL_PLATFORM_DEVICE_EXT = 0x313F
 EGL_DRM_DEVICE_FILE_EXT = 0x3233
+
+# eglGetDisplay returns the same display to every renderer of a process, and
+# eglTerminate ends the contexts of all of them: count the renderers that
+# initialised each display and terminate it when the last one is deleted.
+_DISPLAY_USERS = {}
+_DISPLAY_USERS_LOCK = threading.Lock()
+
+
+def _display_key(display):
+    return ctypes.cast(display, ctypes.c_void_p).value
 
 
 def _ensure_egl_loaded():
@@ -175,6 +186,9 @@ class EGLPlatform(Platform):
 
         # Initialize EGL
         assert eglInitialize(self._egl_display, major, minor)
+        with _DISPLAY_USERS_LOCK:
+            key = _display_key(self._egl_display)
+            _DISPLAY_USERS[key] = _DISPLAY_USERS.get(key, 0) + 1
         assert eglChooseConfig(
             self._egl_display, config_attributes, configs, 1, num_configs
         )
@@ -209,7 +223,13 @@ class EGLPlatform(Platform):
             if self._egl_context is not None:
                 eglDestroyContext(self._egl_display, self._egl_context)
                 self._egl_context = None
-            eglTerminate(self._egl_display)
+            with _DISPLAY_USERS_LOCK:
+                key = _display_key(self._egl_display)
+                users = _DISPLAY_USERS.pop(key, 1) - 1
+                if users > 0:
+                    _DISPLAY_USERS[key] = users
+                else:
+                    eglTerminate(self._egl_display)
             self._egl_display = None
 
     def supports_framebuffers(self):

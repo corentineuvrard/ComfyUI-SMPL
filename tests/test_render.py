@@ -91,6 +91,20 @@ def test_renderer_is_reused_until_size_changes(gl_available, cache):
     assert cache.creations == 2 and cache.size == (48, 32)
 
 
+def test_two_caches_do_not_break_each_other(gl_available, cache):
+    # On EGL (headless Linux) every renderer of a process shares one display:
+    # deleting the renderer of one cache must leave the other one usable.
+    vertices, faces = box_mesh()
+    view = compute_view(vertices, 32, 32)
+    other = RendererCache()
+    render_mesh(vertices, faces, 32, 32, view, cache=cache, mode="inprocess")
+    render_mesh(vertices, faces, 32, 32, view, cache=other, mode="inprocess")
+    other.release()
+    # A new size deletes this cache's renderer, which needs the display, and creates another.
+    result = render_mesh(vertices, faces, 48, 32, compute_view(vertices, 48, 32), cache=cache, mode="inprocess")
+    assert cache.creations == 2 and result.mask.any()
+
+
 @pytest.mark.parametrize("requested, preloaded, expected", [
     (None, False, "inprocess"),
     (None, True, "worker"),
