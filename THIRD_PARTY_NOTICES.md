@@ -45,16 +45,16 @@ separately, under their own terms, which are **not** MIT and in several cases
 
 ## Demo images in this repository
 
-`docs/demo_outputs.png` and `docs/demo_part_unions.png` are 2D renders
-(shaded image, silhouette, 8-bit depth, part labels; 320 × 480 pixels per
-tile) produced by this node pack from the official SMPL and SMPL+H models;
-`docs/workflow_maps.png` and `docs/workflow_part_masks.png` are screenshots
-of the example workflows running in ComfyUI and contain renders of the same
-kind (rendered at 512 × 768, shown scaled down), as do the template
-thumbnails `example_workflows/smpl_avatar_maps.jpg` and
-`example_workflows/smpl_avatar_part_masks.jpg` cropped from them. The images
-contain no model data
-(no mesh, vertices, blend shapes or weights). They
+`docs/demo_outputs.gif` (an animation) and `docs/demo_part_unions.png` are 2D
+renders (shaded image, silhouette, 8-bit depth, part labels, OpenPose
+skeleton; 160 × 240 pixels per panel in the animation, 320 × 480 per tile in
+the image) produced by this node pack from the official SMPL and SMPL+H
+models; `docs/workflow_maps.png`, `docs/workflow_part_masks.png` and
+`docs/workflow_character_sheet.png` are screenshots of the example workflows
+running in ComfyUI and contain renders of the same kind (shown scaled down),
+as do the template thumbnails `example_workflows/*.jpg` cropped from them.
+The images contain no model data (no mesh, vertices, blend shapes or
+weights). They
 are shown for illustration and education only, are **not** covered by this
 repository's MIT license, and remain subject to the SMPL-Model and MANO
 licenses of the models they were rendered from. SMPL and SMPL+H body models
@@ -69,7 +69,8 @@ licenses of the models they were rendered from. SMPL and SMPL+H body models
   `smpl_avatar/_vendor/pyrender/LICENSE` and applies to the files in that
   folder.
 - Modified: viewer and text rendering removed, imports made relative, NumPy 2
-  and Python 3 clean-ups, one error-path fix. See
+  and Python 3 clean-ups, one error-path fix, and an EGL display shared by
+  several renderers kept until the last one is deleted. See
   `smpl_avatar/_vendor/README.md` and the exact diff in
   `smpl_avatar/_vendor/pyrender.patch`.
 
@@ -77,7 +78,7 @@ licenses of the models they were rendered from. SMPL and SMPL+H body models
 
 | Package | License | How it is used |
 |---|---|---|
-| [smplx](https://github.com/vchoutas/smplx) | "Software Copyright License for non-commercial scientific research purposes" (Max Planck; SMPL-X / SMPLify-X terms). Not an open-source license. | Loads SMPL / SMPL-H models at runtime. Installed from PyPI by the user; no smplx code is copied into this repository. |
+| [smplx](https://github.com/vchoutas/smplx) | "Software Copyright License for non-commercial scientific research purposes" (Max Planck; SMPL-X / SMPLify-X terms). Not an open-source license. | Loads SMPL / SMPL-H models at runtime, and provides the vertex indices of the nose, eyes and ears used for the pose keypoints. Installed from PyPI by the user; no smplx code or data is copied into this repository. |
 | [trimesh](https://github.com/mikedh/trimesh) | MIT | Used by the vendored pyrender. |
 | [networkx](https://github.com/networkx/networkx) | BSD 3-Clause | Scene graph of the vendored pyrender. |
 | [PyOpenGL](https://github.com/mcfletch/pyopengl) | BSD-style | OpenGL bindings used by the vendored pyrender. |

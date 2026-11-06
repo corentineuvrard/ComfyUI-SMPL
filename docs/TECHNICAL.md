@@ -150,11 +150,92 @@ a failure.
 head to the lowest point of the feet (the toe tips, about 1 cm below the
 heels in the SMPL pose).
 
+## Views and cameras
+
+*Render SMPL Views* never moves the camera: each view turns the body about
+the centre of its bounding box, first by `azimuth` about the vertical axis,
+then by `elevation` about the horizontal axis (azimuth +90 brings the body's
+right side to the camera; a positive elevation tilts the top of the body
+towards it, i.e. the camera looks down). The lights therefore keep the same
+direction relative to the viewer in every view.
+
+All views of a set share one framing, so that the body keeps the same size
+across a character sheet:
+
+- `fit`: the largest common scale that keeps every view inside its image
+  with `padding` margin. Each view is centred horizontally on its own body,
+  and all share one vertical centre.
+- `fixed`: the view is `view_height_m` metres tall (measured at the body's
+  depth for `perspective`), and the lowest point of all views sits `padding`
+  times the half view height above the bottom edge. A warning names the views
+  that cut the body.
+
+With either framing, the feet of all views are on exactly one line in
+orthographic views at elevation 0. With an elevation or a perspective
+camera, the lowest point can differ from view to view, as the feet point
+towards the camera in some views and away from it in others.
+
+The perspective camera is a pinhole with a vertical field of view `fov`;
+with `fit`, its distance is computed so that every vertex of every view fits.
+pyrender's linearised depth is already the distance along the view axis for
+a perspective camera (the orthographic correction described under
+[Rendering](#rendering) does not apply). Depth maps are normalised view by
+view. A `sheet` concatenates the views horizontally (`N × width` pixels wide);
+its part masks are the 24 masks of the whole sheet. Memory grows with the
+number of views: the part masks alone take 96 bytes per pixel and view.
+
+## Pose keypoints
+
+*SMPL Pose Keypoints* uses the cameras of *Render SMPL Views* and projects:
+
+| COCO keypoint | Source |
+|---|---|
+| neck, shoulders, elbows, wrists, hips, knees, ankles | SMPL joints `neck`, `*_shoulder`, `*_elbow`, `*_wrist`, `*_hip`, `*_knee`, `*_ankle` |
+| nose, eyes, ears | mesh vertices published by smplx (`smplx.vertex_ids["smplh"]`) |
+
+Left and right are anatomical: in a back view the right shoulder is on the
+right of the image, as OpenPose reports it. Whether a face keypoint is seen
+depends on where the head faces. The head's forward axis (from between the
+ears to the nose) and side axis (from ear to ear) give each feature a
+direction: straight ahead for the nose, ahead and slightly outward for the
+eyes, sideways and slightly forward for the ears. A feature is kept when the
+cosine between that direction and the direction to the camera exceeds -0.3
+(nose), 0.1 (eyes) or 0 (ears). Seen at eye level, a front view therefore
+shows the whole face, a three-quarter front view the nose, both eyes and the
+near ear, a profile the nose, the near eye and the near ear, a three-quarter
+back view the near ear and a back view nothing; seen from above or below, a
+feature can appear or disappear. A feature is also dropped
+when the rendered surface around it is at least 8 cm closer to the camera
+(another body part in front of the face), and keypoints that fall outside
+the image are dropped (confidence 0).
+The drawing follows the convention of the OpenPose ControlNet preprocessors:
+black background, one colour per limb at 60 % intensity, full-colour dots;
+limb half-width and dot radius are 4 pixels at 512 pixels and grow with
+larger views.
+
+`keypoints` follows the OpenPose JSON layout used by comfyui_controlnet_aux
+(`people[].pose_keypoints_2d` as flat `x, y, confidence` triples, in pixels,
+plus `canvas_width` / `canvas_height`): one entry per image, so a sheet is
+one canvas with one person per view. `joints_json` gives, for each view, its
+label and angles, the camera in the OpenCV convention (`world_to_camera`
+maps a point of the body's own frame, in metres, y up and facing +z, to
+camera coordinates; `intrinsics` for a perspective view, `pixels_per_metre`
+and `principal_point` for an orthographic one), the 18 keypoints, and every
+SMPL body joint (22, plus the two hand joints of SMPL) with its pixel
+position and its depth along the camera axis (`depth_m`, the z of
+`world_to_camera`). Pixel coordinates are measured from the
+top-left corner of the image (pixel *i* covers [*i*, *i* + 1)); subtract 0.5
+for OpenCV's pixel-centre convention. With an `azimuth` offset, preset views
+are labelled with it (`front +30`).
+
 ## Rendering
 
 - **Camera**: `pyrender.OrthographicCamera`, looking at the body from the
   front (+z). The orthographic projection maps metres to pixels linearly with
   square pixels; `framing` controls the scale (see the node inputs).
+  *Render SMPL Views* turns the body in front of this camera, or of a
+  `pyrender.PerspectiveCamera` (`projection = perspective`); see
+  [Views and cameras](#views-and-cameras).
 - **Renderer**: one `pyrender.OffscreenRenderer` is kept alive and recreated
   only when the output size changes.
 - **Render worker**: PyOpenGL binds to a single OpenGL platform per process.
@@ -279,29 +360,29 @@ reinstalling such a pyrender simply puts 3.1.0 back.
 ## Compatibility
 
 Supported Python versions: **3.10 to 3.14**, the versions ComfyUI runs on
-(its Windows portable build ships Python 3.13). Python 3.15 (release
-candidate) already passes the test suite.
+(its Windows portable build ships Python 3.13). Python 3.15 already passes the
+test suite.
 
-Tested on 2026-09-29 with the dependencies a fresh `pip install -r
-requirements.txt` resolves to (torch 2.14.0 CPU, NumPy 2.2.6 on 3.10, 2.4.6 on
-3.11 and 2.5.3 on 3.12+, PyOpenGL 3.1.10, pyglet 2.1.16, trimesh 5.1.0, smplx
-0.1.28):
+Tested on 2026-11-06 with the dependencies a fresh `pip install -r
+requirements.txt` resolves to (torch 2.15.0 CPU, 2.14.1 on 3.10; NumPy 2.2.6
+on 3.10, 2.4.6 on 3.11 and 2.5.4 on 3.12+; PyOpenGL 3.1.10, pyglet 2.1.19,
+trimesh 5.2.0, smplx 0.1.28):
 
-| Python | Platform | Test suite (real SMPL / SMPL-H models) | Inside ComfyUI 0.37 |
+| Python | Platform | Test suite (real SMPL / SMPL-H models) | Inside ComfyUI 0.44 |
 |---|---|---|---|
-| 3.10.21 | Windows 11 | all passed | not run |
-| 3.11.16 | Windows 11 | all passed | not run |
-| 3.12.14 | Windows 11 | all passed | workflow OK, PyOpenGL kept at 3.1.10, ComfyUI's GLSL node OK |
-| 3.13.15 | Windows 11 | all passed | workflow OK, PyOpenGL kept at 3.1.10, ComfyUI's GLSL node OK |
-| 3.14.7 | Windows 11 | all passed | workflow OK, PyOpenGL kept at 3.1.10, ComfyUI's GLSL node OK |
-| 3.15.0rc2 | Windows 11 | all passed | not run |
+| 3.10.22 | Windows 11 | all passed | not run |
+| 3.11.18 | Windows 11 | all passed | not run |
+| 3.12.16 | Windows 11 | all passed | workflow OK, PyOpenGL kept at 3.1.10, ComfyUI's GLSL node OK |
+| 3.13.18 | Windows 11 | all passed | workflow OK, PyOpenGL kept at 3.1.10, ComfyUI's GLSL node OK |
+| 3.14.10 | Windows 11 | all passed | workflow OK, PyOpenGL kept at 3.1.10, ComfyUI's GLSL node OK |
+| 3.15.2 | Windows 11 | all passed | not run (ComfyUI's kornia-rs dependency does not install on 3.15 yet) |
 | 3.10.12 | Linux, headless (WSL2 Ubuntu 22.04, Mesa EGL) | all passed | not run |
 
 Also tested in ComfyUI 0.3.75 (Python 3.10, NumPy 1.26, PyOpenGL 3.1.0 and
 3.1.10) and in the ComfyUI 0.41.0 Windows portable build (Python 3.13, torch
 2.14, NumPy 2.5), including installation through ComfyUI-Manager.
 
-In ComfyUI the node renders through the worker process (pyglet on Windows);
+In ComfyUI the nodes render through the worker process (pyglet on Windows);
 on headless Linux the pack selects EGL. Not tested yet: macOS, and a Linux GPU
 server without WSL.
 
@@ -315,7 +396,7 @@ Notes:
   harmless here; `pip uninstall pyrender` removes it if nothing else needs it.
 - **Dependency bounds.** `pyglet` is capped below 3.0, whose pre-releases
   remove the `pyglet.gl` module the offscreen context needs. The PyOpenGL
-  4.0 pre-release worked in a smoke test, so PyOpenGL is not capped.
+  4.0 pre-release passes the test suite, so PyOpenGL is not capped.
 - **Known third-party messages** (harmless): PyOpenGL's `No OpenGL_accelerate
   module loaded` line, printed at start-up by ComfyUI's own GLSL node on
   recent versions and again by the render worker on first render;
@@ -326,15 +407,23 @@ Notes:
   smplx's "only 10 shape coefficients" message, printed when loading SMPL-H,
   is captured by the pack (10 betas is what it uses).
 - **Memory**: `part_masks` is 24 × H × W float32, i.e. 96 bytes per pixel
-  (96 MB at 1024×1024, 1.5 GB at 4096×4096); turn `compute_part_masks` off
-  when you do not need it.
-- No custom socket types: every input and output is a standard ComfyUI
-  `IMAGE`, `MASK`, `INT`, `FLOAT`, `BOOLEAN` or combo.
+  (96 MB at 1024×1024, 1.5 GB at 4096×4096).
+- **Socket types**: besides ComfyUI's standard types, the multi-view nodes
+  pass `SMPL_AVATAR` and `SMPL_VIEWS` between themselves, and
+  *SMPL Pose Keypoints* outputs `POSE_KEYPOINT`, the type used by
+  comfyui_controlnet_aux.
 
 ## Development
 
 Importing the pack is cheap: `torch`, `smplx` and the renderer are only
 imported when a node runs.
+
+The ComfyUI side is the `nodes/` package, one module per node:
+`nodes/__init__.py` registers them, `nodes/common.py` holds their category
+and socket types, and `nodes/tensors.py` turns results into torch tensors.
+The nodes call the `smpl_avatar/` library, which returns NumPy arrays and
+does not need ComfyUI (inside ComfyUI, it also looks for the body models in
+ComfyUI's model folders), so it can be tested on its own.
 
 ```bash
 pip install -r requirements.txt pytest
@@ -343,10 +432,11 @@ python -m pytest
 
 The tests run without any licensed file. They cover the regressor (fitting,
 exact volume polynomial, `.npz` I/O), mask union and label decoding,
-segmentation parsing, the OpenGL platform policy, camera framing, node
-registration, and an end-to-end run of both nodes on **synthetic
-SMPL-format models** (an ellipsoid with the SMPL mesh sizes, written in the
-official file format including fake chumpy objects), plus guards on the
+segmentation parsing, the OpenGL platform policy, camera framing, views and
+OpenPose keypoints, the tensor helpers, node registration, and an end-to-end
+run of the nodes on **synthetic SMPL-format models** (an ellipsoid with the
+SMPL mesh sizes, written in the official file format including fake chumpy
+objects), plus guards on the
 dependency list. Rendering tests skip only when the machine cannot create an
 OpenGL context (any other rendering error fails them; set
 `SMPL_AVATAR_REQUIRE_GL=1` to never skip). Tests on the real models run when

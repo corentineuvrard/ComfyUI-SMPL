@@ -1,13 +1,15 @@
 # ComfyUI-SMPL — SMPL Avatar nodes
 
 ComfyUI nodes that build an **SMPL** or **SMPL-H** body from a **height and a
-weight**, render it with an orthographic camera, and output maps that can be
-used directly as ControlNet-style conditioning:
+weight**, render it from one view or a whole set of views (front, back,
+profiles, turnarounds, any angle; orthographic or perspective), and output
+maps that can be used directly as ControlNet-style conditioning:
 
-- a shaded render (`IMAGE`),
+- a shaded render (`IMAGE`), one per view or as a **character sheet**,
 - the silhouette as a `MASK`, computed from the exact render coverage,
 - a depth map (`IMAGE`, near = white),
-- 24 per-body-part masks (`MASK`), plus a node that unions any selection of parts.
+- 24 per-body-part masks (`MASK`), plus a node that unions any selection of parts,
+- the OpenPose skeleton of the same views, with the keypoints and cameras as data.
 
 > **Licensing in one paragraph.** The code in this repository is MIT-licensed.
 > It depends on the SMPL / SMPL-H body models and on the `smplx` package, which
@@ -18,12 +20,15 @@ used directly as ControlNet-style conditioning:
 > license from Meshcapade / Max Planck. See [Licensing](#licensing) and
 > [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-![Outputs of Generate SMPL Avatar: image, mask, depth and coloured part masks for four bodies](docs/demo_outputs.png)
+![Animated demo: a male and a female SMPL-H body of changing height and weight turning around, with the image, mask, depth, coloured part masks and OpenPose skeleton side by side](docs/demo_outputs.gif)
 
-*Four bodies generated from a height and a weight (the caption of each row
-gives the request and the measurements of the resulting mesh). Rendered from
-the SMPL / SMPL+H models, © Max-Planck-Gesellschaft, shown for illustration
-under their non-commercial license; see [docs/README.md](docs/README.md).*
+*A male and a female SMPL-H body generated from a height and a weight (given
+above the images), seen from every side, from above and from below: the image,
+mask, depth and part masks (one colour per part) rendered by the nodes, and the
+OpenPose skeleton of SMPL Pose Keypoints.
+Rendered from the SMPL+H model, © Max-Planck-Gesellschaft, shown for
+illustration under its non-commercial license; see
+[docs/README.md](docs/README.md).*
 
 ## Nodes
 
@@ -64,13 +69,54 @@ avatars gives `N` output masks.
 The 24 parts and their order are listed in
 [docs/TECHNICAL.md](docs/TECHNICAL.md#body-parts).
 
+### SMPL Avatar Body (`SMPLAvatarBody`)
+
+Builds the same body as *Generate SMPL Avatar* (`model_type`, `gender`,
+`height_cm`, `weight_kg`, `arm_angle`) without rendering it, and outputs it as
+an `avatar` for *Render SMPL Views*.
+
+### Render SMPL Views (`SMPLAvatarRenderViews`)
+
+| Input | Type | Description |
+|---|---|---|
+| `avatar` | `SMPL_AVATAR` | The output of *SMPL Avatar Body*. |
+| `views` | combo | `front`, `back`, `left profile`, `right profile`, `front 3/4 left`, `front 3/4 right`, `front / side / back`, `turnaround 4` (front, right profile, back, left profile), `turnaround 8` (every 45°) or `custom`. Left and right are the character's own sides. |
+| `width`, `height` | INT | Size of each view in pixels. |
+| `azimuth`, `elevation` *(optional)* | FLOAT | Degrees. For `custom`, the view itself (0 = front, 90 = right profile, 180 = back); for the other views, added to every view. A positive elevation looks down at the body from above. |
+| `projection`, `fov` *(optional)* | combo, FLOAT | `orthographic` (character sheets, multi-view models) or `perspective`, a regular camera with a vertical field of view of `fov` degrees. |
+| `framing`, `padding`, `view_height_m` *(optional)* | | As in *Generate SMPL Avatar*. All views share one scale and one vertical centre, so the feet line up (exactly in orthographic views at elevation 0). |
+| `layout` *(optional)* | `batch` / `sheet` | `batch`: one image per view. `sheet`: the views side by side in one image. |
+| `background`, `soft_mask`, `compute_part_masks` *(optional)* | | As in *Generate SMPL Avatar*. |
+
+It outputs the same `image`, `mask`, `depth` and `part_masks` as *Generate
+SMPL Avatar*, for every view (24 part masks per output image, which *Union
+SMPL Part Masks* handles), plus `views`: the cameras, for *SMPL Pose
+Keypoints*.
+
+### SMPL Pose Keypoints (`SMPLAvatarPoseKeypoints`)
+
+Takes the `views` of *Render SMPL Views* and outputs, aligned with its renders:
+
+| Output | Type | Description |
+|---|---|---|
+| `pose_image` | IMAGE | The OpenPose skeleton (18 COCO keypoints) on black, for OpenPose ControlNets. |
+| `keypoints` | `POSE_KEYPOINT` | The same keypoints in pixels, in the format of [comfyui_controlnet_aux](https://github.com/Fannovel16/comfyui_controlnet_aux). |
+| `joints_json` | STRING | JSON: for each view, the camera (OpenCV convention), the 18 keypoints and every SMPL body joint. |
+
+The nose, eyes and ears are kept only where an OpenPose detector would see
+them: a profile seen at eye level shows the nose, the near eye and the near ear,
+and a back view no face; a feature hidden by another body part, such as an arm,
+is dropped too ([details](docs/TECHNICAL.md#pose-keypoints)). `include_face`
+turns them off.
+
 ## Example workflows
 
-Both workflows are in [`example_workflows/`](example_workflows) and in
+The workflows are in [`example_workflows/`](example_workflows) and in
 ComfyUI's template browser once the pack is installed (*Templates* in the
-left sidebar, under *Extensions → ComfyUI-SMPL*; searching "smpl" finds
-them). Masks are displayed with ComfyUI's built-in *Preview Mask* node, so no
-other node pack is needed.
+left sidebar, under *Extensions → ComfyUI-SMPL*, or *Extensions →
+smpl-avatar* when ComfyUI-Manager installed the pack; searching "smpl"
+finds them). Masks are displayed with ComfyUI's built-in *Preview Mask*
+node, so no other node pack is needed.
 
 ### Render, silhouette, depth and a part mask
 
@@ -89,6 +135,15 @@ Part Masks* nodes: one uses the `hands` preset, the other selects `head` and
 `neck` with the toggles and dilates the result by 8 pixels (`grow_px`).
 
 ![Workflow: an SMPL-H avatar with two Union SMPL Part Masks nodes, one with the hands preset and one with the head and neck toggles](docs/workflow_part_masks.png)
+
+### Character sheet
+
+[`smpl_avatar_character_sheet.json`](example_workflows/smpl_avatar_character_sheet.json):
+*SMPL Avatar Body* feeds *Render SMPL Views* (`turnaround 4`, `sheet`), whose
+sheets of renders, silhouettes and depth maps are previewed, and *SMPL Pose
+Keypoints* draws the matching OpenPose sheet.
+
+![Workflow: SMPL Avatar Body, Render SMPL Views and SMPL Pose Keypoints producing a four-view character sheet with its silhouettes, depth maps and OpenPose skeletons](docs/workflow_character_sheet.png)
 
 *The screenshots contain renders of the SMPL / SMPL+H models,
 © Max-Planck-Gesellschaft, shown for illustration under their non-commercial
@@ -178,7 +233,6 @@ yourself (or produced from them with `scripts/prepare_models.py`).
 | `SMPL_AVATAR_RENDER_TIMEOUT` | Seconds to wait for one worker reply (default 300; 0 = no limit). |
 | `SMPL_AVATAR_GL_PLATFORM` | `PYOPENGL_PLATFORM` for the render worker (`egl`, `osmesa`, ...; `default` = unset). |
 | `PYOPENGL_PLATFORM` | Never overridden; see [the OpenGL platform notes](docs/TECHNICAL.md#opengl-platform-and-headless-linux) (an empty value counts as unset). |
-| `SMPL_AVATAR_REQUIRE_GL=1` | Tests only: fail instead of skipping rendering tests when no OpenGL context can be created. |
 
 Windows portable build: add one `set NAME=value` line per variable above the
 `python_embeded` line of `run_nvidia_gpu.bat` (or `run_cpu.bat`), for

@@ -34,3 +34,7 @@ upstream checkout and writes `pyrender.patch`, a review diff of every change
    variable after its `except` block.
 6. `__version__` is `0.1.45+a59963e.smpl_avatar`, to tell this copy apart
    from the PyPI release.
+7. The EGL platform terminates a display only when the last renderer that
+   uses it is deleted. EGL gives every renderer of a process the same
+   display, so terminating it with one renderer broke the others
+   (`EGL_BAD_DISPLAY`).
