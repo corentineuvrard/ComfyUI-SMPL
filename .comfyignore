@@ -1,0 +1,13 @@
+# Files left out of the package published to the Comfy Registry (comfy node publish).
+# They stay in the git repository.
+tests/
+conftest.py
+# README illustrations: shown on GitHub, not needed by an installed pack.
+docs/*.png
+docs/*.gif
+# Local files that git ignores, in case comfy-cli packs the folder without
+# git: the prepared model data, caches and bytecode.
+models/**
+!models/README.md
+__pycache__/
+.ruff_cache/
