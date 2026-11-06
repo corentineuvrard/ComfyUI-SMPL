@@ -1,7 +1,7 @@
 [project]
 name = "smpl-avatar"
-version = "0.1.1"
-description = "Generate SMPL / SMPL-H body avatars from height and weight in ComfyUI: shaded render, exact silhouette mask, depth map and 24 body-part masks for ControlNet-style conditioning."
+version = "0.2.0"
+description = "Generate SMPL / SMPL-H body avatars from height and weight in ComfyUI: shaded render, exact silhouette mask, depth map, 24 body-part masks and OpenPose keypoints, from one view or a set of views (character sheets, orthographic or perspective), for ControlNet-style conditioning."
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.10"
