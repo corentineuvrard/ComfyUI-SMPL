@@ -55,7 +55,7 @@ def union_part_masks(part_masks: np.ndarray, indices: Sequence[int]) -> np.ndarr
     if part_masks.ndim != 3 or part_masks.shape[0] == 0 or part_masks.shape[0] % NUM_PARTS:
         raise ValueError(
             f"expected part masks of shape (24*N, H, W), got {part_masks.shape}; connect the "
-            "'part_masks' output of 'Generate SMPL Avatar'"
+            "'part_masks' output of 'Generate SMPL Avatar' or 'Render SMPL Views'"
         )
     count = part_masks.shape[0] // NUM_PARTS
     grouped = part_masks.reshape(count, NUM_PARTS, *part_masks.shape[1:])

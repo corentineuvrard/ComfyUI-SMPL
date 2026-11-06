@@ -36,3 +36,12 @@ def test_erosion_treats_the_outside_of_the_image_as_background(tensors):
     eroded = tensors.grow_mask(full, -1)
     assert eroded.sum() == 9 and eroded[0, 0].sum() == 0 and eroded[0, :, -1].sum() == 0
     assert tensors.grow_mask(full, 1).sum() == 25  # dilation stays inside the image
+
+
+def test_stack_views_makes_a_batch_or_a_sheet(tensors):
+    arrays = [np.full((2, 3, 3), i, dtype=np.float32) for i in range(4)]
+    batch = tensors.stack_views(arrays, "batch")
+    assert batch.shape == (4, 2, 3, 3) and (batch[2] == 2).all()
+    sheet = tensors.stack_views(arrays, "sheet")
+    assert sheet.shape == (1, 2, 12, 3)
+    assert all((sheet[0, :, 3 * i:3 * (i + 1)] == i).all() for i in range(4))

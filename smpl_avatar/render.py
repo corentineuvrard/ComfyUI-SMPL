@@ -1,4 +1,4 @@
-"""Offscreen orthographic rendering with pyrender.
+"""Offscreen rendering with pyrender (orthographic or perspective camera).
 
 One colour pass produces the shaded image, the exact coverage (alpha resolved
 from 4x MSAA) and the depth buffer. An optional flat segmentation pass
@@ -32,7 +32,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, Optional, Tuple
+from typing import Dict, Iterator, Optional, Tuple, Union
 
 import numpy as np
 
@@ -129,6 +129,77 @@ class OrthoView:
         covered = raw > 0
         distance[covered] = self.znear + self.zfar - self.znear * self.zfar / raw[covered]
         return distance
+
+    projection = "orthographic"
+
+    def make_camera(self, pyrender):
+        return pyrender.OrthographicCamera(xmag=self.xmag, ymag=self.ymag, znear=self.znear, zfar=self.zfar)
+
+    def to_array(self) -> np.ndarray:
+        return np.array([self.center_x, self.center_y, self.xmag, self.ymag, self.camera_z, self.znear, self.zfar],
+                        dtype=np.float64)
+
+
+@dataclass(frozen=True)
+class PerspectiveView:
+    """Pinhole camera at ``(center_x, center_y, camera_z)`` looking down -z.
+
+    ``yfov`` is the vertical field of view in radians and ``aspect`` the
+    image width / height, so the focal length is ``height / 2 / tan(yfov / 2)``
+    pixels in both directions.
+    """
+
+    center_x: float
+    center_y: float
+    camera_z: float
+    yfov: float
+    aspect: float
+    znear: float
+    zfar: float
+
+    projection = "perspective"
+
+    def camera_pose(self) -> np.ndarray:
+        pose = np.eye(4)
+        pose[:3, 3] = (self.center_x, self.center_y, self.camera_z)
+        return pose
+
+    def focal_px(self, height: int) -> float:
+        return height / 2.0 / math.tan(self.yfov / 2.0)
+
+    def project(self, points: np.ndarray, width: int, height: int) -> np.ndarray:
+        """World ``(N, 3)`` points -> pixel ``(N, 2)`` coordinates (x right, y down); NaN behind the camera."""
+        points = np.asarray(points, dtype=np.float64)
+        depth = self.camera_z - points[:, 2]
+        in_front = depth > 1e-9
+        safe = np.where(in_front, depth, 1.0)
+        focal = self.focal_px(height)
+        u = width / 2.0 + (points[:, 0] - self.center_x) / safe * focal
+        v = height / 2.0 - (points[:, 1] - self.center_y) / safe * focal
+        return np.where(in_front[:, None], np.stack([u, v], axis=1), np.nan)
+
+    def distance_from_raw_depth(self, raw: np.ndarray) -> np.ndarray:
+        """pyrender's linearised depth is already the distance along the view axis here."""
+        raw = np.asarray(raw, dtype=np.float64)
+        return np.where(raw > 0, raw, 0.0)
+
+    def make_camera(self, pyrender):
+        return pyrender.PerspectiveCamera(yfov=self.yfov, znear=self.znear, zfar=self.zfar, aspectRatio=self.aspect)
+
+    def to_array(self) -> np.ndarray:
+        return np.array([self.center_x, self.center_y, self.camera_z, self.yfov, self.aspect, self.znear, self.zfar],
+                        dtype=np.float64)
+
+
+View = Union[OrthoView, PerspectiveView]
+_VIEW_TYPES = {cls.projection: cls for cls in (OrthoView, PerspectiveView)}
+
+
+def view_from_array(projection: str, values) -> View:
+    """Rebuild a view serialised with ``to_array()`` (used by the render worker)."""
+    if projection not in _VIEW_TYPES:
+        raise ValueError(f"unknown projection {projection!r}")
+    return _VIEW_TYPES[projection](*(float(x) for x in values))
 
 
 def compute_view(
@@ -358,7 +429,7 @@ def rasterize(
     faces: np.ndarray,
     width: int,
     height: int,
-    view: OrthoView,
+    view: View,
     face_labels: Optional[np.ndarray] = None,
     cache: RendererCache = RENDERER_CACHE,
 ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
@@ -372,9 +443,7 @@ def rasterize(
     vertices = np.asarray(vertices, dtype=np.float32)
     faces = np.asarray(faces, dtype=np.uint32)
 
-    camera = pyrender.OrthographicCamera(
-        xmag=view.xmag, ymag=view.ymag, znear=view.znear, zfar=view.zfar
-    )
+    camera = view.make_camera(pyrender)
     camera_pose = view.camera_pose()
 
     scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=[0.22, 0.22, 0.22])
@@ -451,15 +520,13 @@ def _read_message(stream) -> bytes:
     return _read_exact(stream, size)
 
 
-def encode_request(vertices, faces, width, height, view: OrthoView, face_labels=None) -> bytes:
+def encode_request(vertices, faces, width, height, view: View, face_labels=None) -> bytes:
     arrays = {
         "vertices": np.asarray(vertices, dtype=np.float32),
         "faces": np.asarray(faces, dtype=np.uint32),
         "size": np.array([width, height], dtype=np.int64),
-        "view": np.array(
-            [view.center_x, view.center_y, view.xmag, view.ymag, view.camera_z, view.znear, view.zfar],
-            dtype=np.float64,
-        ),
+        "projection": np.array(view.projection),
+        "view": view.to_array(),
     }
     if face_labels is not None:
         arrays["face_labels"] = np.asarray(face_labels, dtype=np.int64)
@@ -471,7 +538,8 @@ def handle_request(payload: bytes, cache: RendererCache = RENDERER_CACHE) -> byt
     try:
         request = _unpack(payload)
         width, height = (int(x) for x in request["size"])
-        view = OrthoView(*(float(x) for x in request["view"]))
+        projection = str(request["projection"]) if "projection" in request else OrthoView.projection
+        view = view_from_array(projection, request["view"])
         color, raw_depth, seg = rasterize(
             request["vertices"], request["faces"], width, height, view,
             face_labels=request.get("face_labels"), cache=cache,
@@ -652,7 +720,7 @@ class RenderResult:
     image: np.ndarray  # (H, W, 3) float32, composited over the background
     mask: np.ndarray  # (H, W) float32, hard (0/1) or soft coverage
     depth: np.ndarray  # (H, W) float32, near = 1, far body = DEPTH_FAR_VALUE, background = 0
-    distance: np.ndarray  # (H, W) float32, camera distance in metres (0 = background)
+    distance: np.ndarray  # (H, W) float32, depth along the camera axis in metres (0 = background)
     coverage: np.ndarray  # (H, W) float32, MSAA coverage in [0, 1]
     labels: Optional[np.ndarray] = None  # (H, W) int64 part index, -1 = background
     part_masks: Optional[np.ndarray] = None  # (24, H, W) float32
@@ -663,7 +731,7 @@ def render_mesh(
     faces: np.ndarray,
     width: int,
     height: int,
-    view: OrthoView,
+    view: View,
     face_labels: Optional[np.ndarray] = None,
     background: str = "black",
     soft_mask: bool = False,

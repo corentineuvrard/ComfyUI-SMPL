@@ -1,5 +1,6 @@
 """Rendering tests. They need an OpenGL context; SMPL tests also need the model files."""
 
+import json
 import subprocess
 import sys
 import textwrap
@@ -210,6 +211,60 @@ def test_generate_node_outputs(pack, gl_available, tmp_path, monkeypatch, model_
     union = pack.NODE_CLASS_MAPPINGS["SMPLAvatarPartMaskUnion"]()
     (full,) = union.union(parts, preset="full body")
     assert torch.equal(full, mask)
+
+
+@needs_models
+@each_model
+def test_pose_keypoints_follow_the_view(pack, gl_available, tmp_path, monkeypatch, model_type, gender):
+    """Face keypoints only where the face is seen, and the skeleton sits on the silhouette."""
+    monkeypatch.setattr(pack.smpl_avatar.paths, "REGRESSOR_PATH", tmp_path / "reg.npz")
+    pack.smpl_avatar.pipeline._regressors.clear()
+    nodes = pack.NODE_CLASS_MAPPINGS
+    (avatar,) = nodes["SMPLAvatarBody"]().build(model_type, gender, 175.0, 70.0, arm_angle=40.0)
+    _, mask, _, _, views = nodes["SMPLAvatarRenderViews"]().render(avatar, "turnaround 4", 192, 288, layout="batch")
+    _, frames, _ = nodes["SMPLAvatarPoseKeypoints"]().keypoints(views)
+    face = {"nose": 0, "right_eye": 14, "left_eye": 15, "right_ear": 16, "left_ear": 17}
+    seen = []
+    for frame in frames:
+        k = np.asarray(frame["people"][0]["pose_keypoints_2d"]).reshape(18, 3)
+        seen.append({name for name, i in face.items() if k[i, 2] > 0})
+    front, right_profile, back, left_profile = seen
+    assert front == set(face)
+    assert back == set()
+    assert right_profile == {"nose", "right_eye", "right_ear"}
+    assert left_profile == {"nose", "left_eye", "left_ear"}
+    k = np.asarray(frames[0]["people"][0]["pose_keypoints_2d"]).reshape(18, 3)
+    m = mask[0].numpy()
+    assert all(m[int(y), int(x)] > 0 for x, y, c in k if c > 0)
+
+    # Left and right are the character's own: the right shoulder is on the left of a front view
+    # and on the right of a back view; in the right profile the right wrist is nearer the camera.
+    def shoulders(frame):
+        k = np.asarray(frame["people"][0]["pose_keypoints_2d"]).reshape(18, 3)
+        return k[2, 0], k[5, 0]
+
+    right, left = shoulders(frames[0])
+    assert right < left
+    right, left = shoulders(frames[2])
+    assert right > left
+    report = json.loads(nodes["SMPLAvatarPoseKeypoints"]().keypoints(views)[2])
+    wrists = {j["name"]: j["depth_m"] for j in report["views"][1]["joints"] if j["name"].endswith("_wrist")}
+    assert wrists["right_wrist"] < wrists["left_wrist"]
+
+    # The same features at other elevations and with a perspective camera.
+    for elevation, projection in ((30.0, "orthographic"), (-30.0, "perspective"), (30.0, "perspective")):
+        _, _, _, _, tilted = nodes["SMPLAvatarRenderViews"]().render(
+            avatar, "turnaround 8", 192, 288, elevation=elevation, projection=projection, fov=40.0,
+            layout="batch", compute_part_masks=False)
+        _, tilted_frames, _ = nodes["SMPLAvatarPoseKeypoints"]().keypoints(tilted)
+        found = []
+        for frame in tilted_frames:
+            k = np.asarray(frame["people"][0]["pose_keypoints_2d"]).reshape(18, 3)
+            found.append({name for name, i in face.items() if k[i, 2] > 0})
+        assert found[0] == set(face) and found[4] == set()  # front, back
+        assert found[1] == {"nose", "right_eye", "left_eye", "right_ear"}  # front 3/4 right
+        assert found[2] == {"nose", "right_eye", "right_ear"} and found[6] == {"nose", "left_eye", "left_ear"}
+        assert found[3] == {"right_ear"} and found[5] == {"left_ear"}  # back 3/4
 
 
 def _wrapped(inner: BaseException) -> BaseException:

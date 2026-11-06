@@ -1,4 +1,4 @@
-"""Height/weight -> betas -> posed mesh -> rendered maps."""
+"""Height/weight -> betas -> posed mesh -> rendered maps (one view or a set of views)."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ import logging
 import math
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
-from . import body_model, paths, regressor, segmentation
-from .render import RenderResult, compute_view, render_mesh, rotate_y
+from . import body_model, keypoints, paths, regressor, segmentation, views
+from .render import RenderResult, View, compute_view, render_mesh, rotate_y
 
 LOGGER = logging.getLogger(__name__)
 
@@ -150,6 +150,63 @@ def clipping_warning(vertices: np.ndarray, view) -> Optional[str]:
     )
 
 
+def _check_finite(*named_values) -> None:
+    for name, value in named_values:
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be a finite number, got {value!r}")
+
+
+@dataclass
+class AvatarBody:
+    """A posed body in its own frame (metres, y up, facing +z), before any view."""
+
+    model: body_model.BodyModel
+    model_type: str
+    gender: str
+    height_cm: float
+    weight_kg: float
+    arm_angle: float
+    betas: np.ndarray
+    vertices: np.ndarray  # (V, 3)
+    joints: np.ndarray  # (J, 3): the model's joints, then smplx's face, feet and fingertip points
+    measured_height_cm: float
+    measured_weight_kg: float
+
+    @property
+    def faces(self) -> np.ndarray:
+        return self.model.faces
+
+
+def build_body(
+    model_type: str,
+    gender: str,
+    height_cm: float,
+    weight_kg: float,
+    arm_angle: float = 0.0,
+    regressor_path: Optional[Path] = None,
+) -> AvatarBody:
+    """Load the model, map height and weight to betas and pose the arms."""
+    _check_finite(("height_cm", height_cm), ("weight_kg", weight_kg), ("arm_angle", arm_angle))
+    model = body_model.load(model_type, gender)
+    reg = regressor_for(model, regressor_path or paths.REGRESSOR_PATH)
+    betas = reg.predict(height_cm, weight_kg)
+    measured_h, measured_w = model.measurer(betas)
+    LOGGER.info(
+        "[SMPL Avatar] %s %s: requested %.1f cm / %.1f kg -> mesh %.1f cm / %.1f kg",
+        model_type, gender, height_cm, weight_kg, measured_h[0], measured_w[0],
+    )
+    warning = extrapolation_warning(reg, height_cm, weight_kg, float(measured_h[0]), float(measured_w[0]), betas)
+    if warning:
+        LOGGER.warning("[SMPL Avatar] %s %s: %s", model_type, gender, warning)
+    vertices, joints = body_model.posed_vertices(model, betas, arm_angle)
+    return AvatarBody(
+        model=model, model_type=model_type, gender=gender, height_cm=float(height_cm),
+        weight_kg=float(weight_kg), arm_angle=float(arm_angle),
+        betas=np.asarray(betas, dtype=np.float32), vertices=vertices, joints=joints,
+        measured_height_cm=float(measured_h[0]), measured_weight_kg=float(measured_w[0]),
+    )
+
+
 @dataclass
 class Avatar:
     render: RenderResult
@@ -178,42 +235,108 @@ def generate(
     regressor_path: Optional[Path] = None,
 ) -> Avatar:
     # Widget ranges are checked by ComfyUI; values from linked inputs are not.
-    for name, value in (("height_cm", height_cm), ("weight_kg", weight_kg), ("arm_angle", arm_angle),
-                        ("yaw", yaw), ("padding", padding), ("view_height_m", view_height_m)):
-        if not math.isfinite(value):
-            raise ValueError(f"{name} must be a finite number, got {value!r}")
+    _check_finite(("height_cm", height_cm), ("weight_kg", weight_kg), ("arm_angle", arm_angle),
+                  ("yaw", yaw), ("padding", padding), ("view_height_m", view_height_m))
     if padding < 0:
         raise ValueError(f"padding must be >= 0, got {padding!r}")
     if view_height_m <= 0:
         raise ValueError(f"view_height_m must be positive, got {view_height_m!r}")
-    body = body_model.load(model_type, gender)
-    reg = regressor_for(body, regressor_path or paths.REGRESSOR_PATH)
-    betas = reg.predict(height_cm, weight_kg)
-    measured_h, measured_w = body.measurer(betas)
-    LOGGER.info(
-        "[SMPL Avatar] %s %s: requested %.1f cm / %.1f kg -> mesh %.1f cm / %.1f kg",
-        model_type, gender, height_cm, weight_kg, measured_h[0], measured_w[0],
-    )
-    warning = extrapolation_warning(reg, height_cm, weight_kg, float(measured_h[0]), float(measured_w[0]), betas)
-    if warning:
-        LOGGER.warning("[SMPL Avatar] %s %s: %s", model_type, gender, warning)
-    vertices, joints = body_model.posed_vertices(body, betas, arm_angle)
-    vertices = rotate_y(vertices, yaw)
-    joints = rotate_y(joints, yaw)
+    body = build_body(model_type, gender, height_cm, weight_kg, arm_angle, regressor_path)
+    vertices = rotate_y(body.vertices, yaw)
+    joints = rotate_y(body.joints, yaw)
     view = compute_view(vertices, width, height, framing, padding, view_height_m)
     clipped = clipping_warning(vertices, view)
     if clipped:
         LOGGER.warning("[SMPL Avatar] %s %s: %s", model_type, gender, clipped)
-    labels = face_labels_for(body) if part_masks else None
+    labels = face_labels_for(body.model) if part_masks else None
     result = render_mesh(
         vertices, body.faces, width, height, view,
         face_labels=labels, background=background, soft_mask=soft_mask,
     )
     return Avatar(
         render=result,
-        betas=np.asarray(betas, dtype=np.float32),
+        betas=body.betas,
         vertices=vertices,
         joints=joints,
-        measured_height_cm=float(measured_h[0]),
-        measured_weight_kg=float(measured_w[0]),
+        measured_height_cm=body.measured_height_cm,
+        measured_weight_kg=body.measured_weight_kg,
     )
+
+
+# ------------------------------------------------------------- multi-view
+
+
+@dataclass
+class ViewSet:
+    """The views rendered by 'Render SMPL Views', passed on to 'SMPL Pose Keypoints'."""
+
+    body: AvatarBody
+    specs: List[views.ViewSpec]
+    cameras: List[View]
+    pivot: np.ndarray
+    width: int
+    height: int
+    layout: str  # "batch" or "sheet"
+    # Per view: which face keypoints (keypoints.COCO_FROM_VERTEX names) the view
+    # shows (facing the camera, inside the image and not hidden in the rendered
+    # depth); filled by render_view(), {} for a view not rendered yet.
+    face_visible: List[Dict[str, bool]] = field(default_factory=list)
+
+    def posed(self, points: np.ndarray, index: int) -> np.ndarray:
+        """``points`` of the body (rest frame) as seen in view ``index``."""
+        return views.transform(points, self.specs[index], self.pivot)
+
+
+LAYOUTS = ("batch", "sheet")
+
+
+def prepare_views(
+    body: AvatarBody,
+    preset: str,
+    width: int,
+    height: int,
+    azimuth: float = 0.0,
+    elevation: float = 0.0,
+    projection: str = "orthographic",
+    fov: float = 30.0,
+    framing: str = "fit",
+    padding: float = 0.1,
+    view_height_m: float = 2.2,
+    layout: str = "batch",
+) -> ViewSet:
+    """The views of ``preset`` and their cameras, all at the same scale (nothing rendered yet)."""
+    if layout not in LAYOUTS:
+        raise ValueError(f"unknown layout {layout!r}; expected one of {LAYOUTS}")
+    specs = views.expand(preset, azimuth, elevation)
+    pivot = views.pivot_of(body.vertices)
+    posed = [views.transform(body.vertices, spec, pivot) for spec in specs]
+    cameras = views.frame_views(posed, width, height, projection, fov, framing, padding, view_height_m)
+    cut = [spec.label for spec, verts, cam in zip(specs, posed, cameras)
+           if views.outside_fraction(verts, cam, width, height) > 0]
+    if cut:
+        LOGGER.warning(
+            "[SMPL Avatar] %s %s: the body does not fit the view in %s. With framing = fixed, increase "
+            "view_height_m, use a wider image, or lower the arms with arm_angle.",
+            body.model_type, body.gender, ", ".join(cut),
+        )
+    return ViewSet(body=body, specs=specs, cameras=cameras, pivot=pivot,
+                   width=int(width), height=int(height), layout=layout)
+
+
+def render_view(
+    view_set: ViewSet,
+    index: int,
+    background: str = "black",
+    soft_mask: bool = False,
+    part_masks: bool = True,
+) -> RenderResult:
+    """Render view ``index`` of ``view_set`` and record which face keypoints it shows."""
+    body = view_set.body
+    labels = face_labels_for(body.model) if part_masks else None
+    result = render_mesh(view_set.posed(body.vertices, index), body.faces, view_set.width, view_set.height,
+                         view_set.cameras[index], face_labels=labels, background=background, soft_mask=soft_mask)
+    visible = keypoints.face_visibility(view_set, index, result.distance, result.coverage)
+    while len(view_set.face_visible) <= index:  # views may be rendered in any order
+        view_set.face_visible.append({})
+    view_set.face_visible[index] = visible
+    return result

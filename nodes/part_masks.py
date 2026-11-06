@@ -23,7 +23,8 @@ class SMPLAvatarPartMaskUnion:
     @classmethod
     def INPUT_TYPES(cls):
         required = {
-            "part_masks": ("MASK", {"tooltip": "The 'part_masks' output of 'Generate SMPL Avatar'."}),
+            "part_masks": ("MASK", {"tooltip": "The 'part_masks' output of 'Generate SMPL Avatar' or "
+                                               "'Render SMPL Views'."}),
             "preset": (list(masks.PRESETS), {"default": "none", "tooltip": "Group of parts to include."}),
         }
         for name in PART_NAMES:
@@ -53,6 +54,6 @@ class SMPLAvatarPartMaskUnion:
             LOGGER.warning(
                 "[SMPL Avatar] Union SMPL Part Masks: every input part mask is empty, so the "
                 "output is empty too: usually 'compute_part_masks' is off on Generate SMPL "
-                "Avatar, or the body lies outside the view (framing = fixed)."
+                "Avatar / Render SMPL Views, or the body lies outside the view (framing = fixed)."
             )
         return (grow_mask(to_tensor(result), grow_px),)

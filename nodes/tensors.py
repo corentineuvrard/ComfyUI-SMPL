@@ -5,6 +5,8 @@ torch is imported inside the functions, so that importing the pack stays cheap.
 
 from __future__ import annotations
 
+from typing import Sequence
+
 import numpy as np
 
 
@@ -31,3 +33,11 @@ def grow_mask(mask, pixels: int):
         x = F.pad(x, (radius, radius, radius, radius), value=0.0)
         y = -F.max_pool2d(-x, kernel_size=2 * radius + 1, stride=1)
     return y[:, 0]
+
+
+def stack_views(arrays: Sequence[np.ndarray], layout: str) -> np.ndarray:
+    """Batch ``(N, ...)`` for 'batch', or the views side by side ``(1, H, N * W, ...)`` for 'sheet'."""
+    stacked = np.stack(arrays)
+    if layout == "sheet":
+        return np.concatenate(list(stacked), axis=1)[None]
+    return stacked

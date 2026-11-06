@@ -8,26 +8,32 @@ from helpers import REPO
 from smpl_avatar.segmentation import PART_NAMES
 
 STANDARD_TYPES = {"IMAGE", "MASK", "INT", "FLOAT", "BOOLEAN", "STRING"}
+# The pack's own socket types, and POSE_KEYPOINT, shared with comfyui_controlnet_aux.
+PACK_TYPES = {"SMPL_AVATAR", "SMPL_VIEWS", "POSE_KEYPOINT"}
+NODES = {
+    "SMPLAvatarGenerate": "Generate SMPL Avatar",
+    "SMPLAvatarPartMaskUnion": "Union SMPL Part Masks",
+    "SMPLAvatarBody": "SMPL Avatar Body",
+    "SMPLAvatarRenderViews": "Render SMPL Views",
+    "SMPLAvatarPoseKeypoints": "SMPL Pose Keypoints",
+}
 
 
 def test_mappings(pack):
-    assert set(pack.NODE_CLASS_MAPPINGS) == {"SMPLAvatarGenerate", "SMPLAvatarPartMaskUnion"}
-    assert pack.NODE_DISPLAY_NAME_MAPPINGS == {
-        "SMPLAvatarGenerate": "Generate SMPL Avatar",
-        "SMPLAvatarPartMaskUnion": "Union SMPL Part Masks",
-    }
+    assert set(pack.NODE_CLASS_MAPPINGS) == set(NODES)
+    assert pack.NODE_DISPLAY_NAME_MAPPINGS == NODES
     assert set(pack.__all__) == {"NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"}
 
 
-@pytest.mark.parametrize("key", ["SMPLAvatarGenerate", "SMPLAvatarPartMaskUnion"])
+@pytest.mark.parametrize("key", list(NODES))
 def test_node_contract(pack, key):
     cls = pack.NODE_CLASS_MAPPINGS[key]
     assert callable(getattr(cls(), cls.FUNCTION))
     assert cls.CATEGORY == "SMPL Avatar"
     assert cls.DESCRIPTION
     assert len(cls.RETURN_TYPES) == len(cls.RETURN_NAMES) == len(cls.OUTPUT_TOOLTIPS)
-    # Only standard ComfyUI types: no undocumented custom socket types.
-    assert set(cls.RETURN_TYPES) <= {"IMAGE", "MASK"}
+    # Standard ComfyUI types, plus the documented types passed between the pack's nodes.
+    assert set(cls.RETURN_TYPES) <= {"IMAGE", "MASK", "STRING"} | PACK_TYPES
 
     spec = cls.INPUT_TYPES()
     assert set(spec) <= {"required", "optional", "hidden"}
@@ -36,7 +42,7 @@ def test_node_contract(pack, key):
             if isinstance(kind, list):
                 assert options.get("default", kind[0]) in kind, name
                 continue
-            assert kind in STANDARD_TYPES, (name, kind)
+            assert kind in STANDARD_TYPES | PACK_TYPES, (name, kind)
             if kind in ("INT", "FLOAT"):
                 assert options["min"] <= options["default"] <= options["max"], name
             if kind == "BOOLEAN":
@@ -50,6 +56,20 @@ def test_generate_inputs(pack):
     assert required["model_type"][0] == ["SMPL", "SMPL-H"]
     assert required["gender"][0] == ["male", "female"]
     assert pack.NODE_CLASS_MAPPINGS["SMPLAvatarGenerate"].RETURN_TYPES == ("IMAGE", "MASK", "IMAGE", "MASK")
+
+
+def test_multi_view_nodes_connect(pack):
+    """Body -> Render SMPL Views -> SMPL Pose Keypoints, and the existing outputs are unchanged."""
+    body = pack.NODE_CLASS_MAPPINGS["SMPLAvatarBody"]
+    render = pack.NODE_CLASS_MAPPINGS["SMPLAvatarRenderViews"]
+    keypoints = pack.NODE_CLASS_MAPPINGS["SMPLAvatarPoseKeypoints"]
+    assert body.RETURN_TYPES == ("SMPL_AVATAR",)
+    assert render.INPUT_TYPES()["required"]["avatar"][0] == "SMPL_AVATAR"
+    assert render.RETURN_TYPES == ("IMAGE", "MASK", "IMAGE", "MASK", "SMPL_VIEWS")
+    assert keypoints.INPUT_TYPES()["required"]["views"][0] == "SMPL_VIEWS"
+    assert keypoints.RETURN_TYPES == ("IMAGE", "POSE_KEYPOINT", "STRING")
+    assert list(body.INPUT_TYPES()["required"]) == ["model_type", "gender", "height_cm", "weight_kg"]
+    assert render.INPUT_TYPES()["required"]["views"][0][:4] == ["front", "back", "left profile", "right profile"]
 
 
 def test_union_node_inputs_list_every_part(pack):

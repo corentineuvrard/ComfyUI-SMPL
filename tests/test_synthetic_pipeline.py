@@ -1,5 +1,6 @@
 """End-to-end tests on synthetic model files (no licensed SMPL data needed)."""
 
+import json
 import pickle
 import sys
 import zipfile
@@ -8,7 +9,7 @@ import numpy as np
 import pytest
 
 from helpers import block_import, load_script
-from smpl_avatar import body_model, pipeline, regressor
+from smpl_avatar import body_model, keypoints, pipeline, regressor
 from synthetic_models import (
     dumps_with_fake_chumpy, ellipsoid, mano_dict, model_dict, write_clean_models, write_segmentation,
 )
@@ -187,6 +188,94 @@ def test_fixed_framing_warns_when_the_body_is_cut(synthetic_install, gl_availabl
         pipeline.generate("SMPL", "male", 175.0, 70.0, 64, 96, framing="fixed", view_height_m=5.0, part_masks=False)
         pipeline.generate("SMPL", "male", 175.0, 70.0, 64, 96, framing="fit", part_masks=False)
     assert "does not fit" not in caplog.text
+
+
+def test_multi_view_nodes_end_to_end(synthetic_install, gl_available, pack):
+    torch = pytest.importorskip("torch")
+    nodes = pack.NODE_CLASS_MAPPINGS
+    (avatar,) = nodes["SMPLAvatarBody"]().build("SMPL-H", "female", 170.0, 65.0, arm_angle=30.0)
+    assert avatar.vertices.shape == (6890, 3) and avatar.model_type == "SMPL-H"
+    render, union, pose = nodes["SMPLAvatarRenderViews"](), nodes["SMPLAvatarPartMaskUnion"](), nodes["SMPLAvatarPoseKeypoints"]()
+
+    image, mask, depth, parts, views = render.render(avatar, "turnaround 4", 64, 96, layout="batch")
+    assert image.shape == depth.shape == (4, 96, 64, 3) and mask.shape == (4, 96, 64)
+    assert parts.shape == (96, 96, 64)  # 24 masks per view
+    (full,) = union.union(parts, preset="full body")
+    assert torch.equal(full, mask)
+
+    sheet, sheet_mask, sheet_depth, sheet_parts, sheet_views = render.render(avatar, "turnaround 4", 64, 96, layout="sheet")
+    assert sheet.shape == (1, 96, 256, 3) and sheet_parts.shape == (24, 96, 256)
+    for i in range(4):  # the sheet is the batch, side by side
+        assert torch.equal(sheet[0, :, 64 * i:64 * (i + 1)], image[i])
+        assert torch.equal(sheet_mask[0, :, 64 * i:64 * (i + 1)], mask[i])
+    (sheet_full,) = union.union(sheet_parts, preset="full body")
+    assert torch.equal(sheet_full, sheet_mask)
+
+    pose_image, frames, joints_json = pose.keypoints(sheet_views)
+    assert pose_image.shape == (1, 96, 256, 3)
+    assert len(frames) == 1 and frames[0]["canvas_width"] == 256 and len(frames[0]["people"]) == 4
+    for i, person in enumerate(frames[0]["people"]):
+        k = np.asarray(person["pose_keypoints_2d"]).reshape(18, 3)
+        xs = k[k[:, 2] > 0, 0]
+        assert len(xs) >= 13 and (xs >= 64 * i).all() and (xs < 64 * (i + 1)).all()  # inside its own view
+    report = json.loads(joints_json)
+    assert [v["camera"]["label"] for v in report["views"]] == ["front", "right profile", "back", "left profile"]
+    assert len(report["views"][0]["joints"]) == 22 and report["views"][3]["offset_x"] == 192
+
+    # The POSE_KEYPOINT contract comfyui_controlnet_aux decodes: 54 numbers, confidence 1.0 or an
+    # absent point as (0, 0, 0); and the drawn sheet shows each kept keypoint in its colour.
+    sheet_pose = pose_image[0].numpy()
+    for person in frames[0]["people"]:
+        values = person["pose_keypoints_2d"]
+        assert len(values) == 54
+        for x, y, c in np.asarray(values).reshape(18, 3).tolist():
+            assert c in (0.0, 1.0) and (c == 1.0 or (x, y) == (0.0, 0.0))
+        points = np.asarray(values).reshape(18, 3)
+        for i, ((x, y, c), color) in enumerate(zip(points, keypoints.COLORS)):
+            later = points[i + 1:][points[i + 1:, 2] > 0, :2]  # dots drawn over this one
+            if c and (len(later) == 0 or np.hypot(*(later - (x, y)).T).min() > 9):
+                assert tuple(np.round(sheet_pose[int(y), int(x)] * 255)) == color
+
+    batch_pose, batch_frames, _ = pose.keypoints(views, include_face=False)
+    assert batch_pose.shape == (4, 96, 64, 3) and len(batch_frames) == 4
+    k = np.asarray(batch_frames[0]["people"][0]["pose_keypoints_2d"]).reshape(18, 3)
+    assert (k[[0, 14, 15, 16, 17], 2] == 0).all()  # include_face=False
+
+    _, _, _, no_parts, _ = render.render(avatar, "front / side / back", 64, 96, layout="batch", compute_part_masks=False)
+    assert no_parts.shape == (72, 96, 64) and float(no_parts.abs().sum()) == 0
+
+    persp = render.render(avatar, "custom", 64, 96, azimuth=20.0, elevation=10.0, projection="perspective",
+                          fov=50.0, layout="batch")
+    assert persp[0].shape == (1, 96, 64, 3) and float(persp[1].sum()) > 100
+
+
+def test_views_can_be_rendered_in_any_order(synthetic_install, gl_available):
+    body = pipeline.build_body("SMPL", "male", 175.0, 70.0, 30.0)
+    view_set = pipeline.prepare_views(body, "front / side / back", 64, 96)
+    pipeline.render_view(view_set, 2, part_masks=False)
+    pipeline.render_view(view_set, 0, part_masks=False)
+    assert len(view_set.face_visible) == 3 and view_set.face_visible[1] == {}
+    assert set(view_set.face_visible[0]) == set(view_set.face_visible[2]) == set(keypoints.COCO_FROM_VERTEX.values())
+    assert keypoints.coco_keypoints(view_set, 1)[[0, 14, 15, 16, 17], 2].sum() == 0  # not rendered: no face
+
+
+def test_keypoints_from_the_library_alone(synthetic_install, gl_available):
+    """The frames and the report of SMPL Pose Keypoints, from smpl_avatar.keypoints only."""
+    body = pipeline.build_body("SMPL", "male", 175.0, 70.0, 30.0)
+    view_set = pipeline.prepare_views(body, "front / side / back", 64, 96, layout="sheet")
+    for i in range(len(view_set.specs)):
+        pipeline.render_view(view_set, i, part_masks=False)
+    per_view = keypoints.keypoints_per_view(view_set)
+    assert len(per_view) == 3 and all(k.shape == (18, 3) for k in per_view)
+    no_face = keypoints.keypoints_per_view(view_set, include_face=False)
+    assert all((k[[0, 14, 15, 16, 17], 2] == 0).all() for k in no_face)
+    (frame,) = keypoints.pose_frames(view_set, per_view)
+    assert frame["canvas_width"] == 192 and len(frame["people"]) == 3
+    report = json.loads(json.dumps(keypoints.joints_report(view_set, per_view)))
+    assert report["model_type"] == "SMPL" and report["layout"] == "sheet"
+    assert [v["camera"]["label"] for v in report["views"]] == ["front", "right profile", "back"]
+    assert [v["offset_x"] for v in report["views"]] == [0, 64, 128]
+    assert len(report["views"][0]["joints"]) == 24 and len(report["views"][0]["coco_keypoints"]) == 18
 
 
 def test_regressor_is_refit_when_the_model_changes(synthetic_install, caplog):
